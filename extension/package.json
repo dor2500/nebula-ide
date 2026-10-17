@@ -1,0 +1,320 @@
+{
+  "name": "nebula-agent",
+  "displayName": "Nebula Agent",
+  "description": "Claude-powered agent for Nebula IDE: agent panel, Agent Manager, change review and Antigravity import.",
+  "version": "1.0.0",
+  "publisher": "nebula",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "main": "./extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "secondarySidebar": [
+        {
+          "id": "nebula-agent",
+          "title": "Agent",
+          "icon": "media/spark.svg"
+        }
+      ]
+    },
+    "views": {
+      "nebula-agent": [
+        {
+          "type": "webview",
+          "id": "nebula.agentView",
+          "name": "Agent",
+          "icon": "media/spark.svg"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "nebula.focusAgent",
+        "title": "Open Agent",
+        "category": "Nebula"
+      },
+      {
+        "command": "nebula.newConversation",
+        "title": "New Conversation",
+        "category": "Nebula",
+        "icon": "$(add)"
+      },
+      {
+        "command": "nebula.openAgentManager",
+        "title": "Open Agent Manager",
+        "category": "Nebula",
+        "icon": "$(layout)"
+      },
+      {
+        "command": "nebula.inlineEdit",
+        "title": "Edit Selection with Agent",
+        "category": "Nebula"
+      },
+      {
+        "command": "nebula.signIn",
+        "title": "Sign in with Claude",
+        "category": "Nebula"
+      },
+      {
+        "command": "nebula.signOut",
+        "title": "Sign out of Claude",
+        "category": "Nebula"
+      },
+      {
+        "command": "nebula.setApiKey",
+        "title": "Use Anthropic API Key",
+        "category": "Nebula"
+      },
+      {
+        "command": "nebula.importAntigravity",
+        "title": "Import Extensions & Settings from Antigravity",
+        "category": "Nebula"
+      },
+      {
+        "command": "nebula.reviewChanges",
+        "title": "Review Agent Changes",
+        "category": "Nebula"
+      },
+      {
+        "command": "nebula.acceptAll",
+        "title": "Accept All Agent Changes",
+        "category": "Nebula"
+      },
+      {
+        "command": "nebula.rejectAll",
+        "title": "Reject All Agent Changes",
+        "category": "Nebula"
+      },
+      {
+        "command": "nebula.history",
+        "title": "Past Conversations",
+        "category": "Nebula",
+        "icon": "$(history)"
+      },
+      {
+        "command": "nebula.moreOptions",
+        "title": "Additional Options",
+        "category": "Nebula",
+        "icon": "$(ellipsis)"
+      },
+      {
+        "command": "nebula.closeAgent",
+        "title": "Close Agent",
+        "category": "Nebula",
+        "icon": "$(close)"
+      },
+      {
+        "command": "nebula.selectModel",
+        "title": "Select Model",
+        "category": "Nebula"
+      },
+      {
+        "command": "nebula.updateEngine",
+        "title": "Check for Claude Engine Updates",
+        "category": "Nebula"
+      },
+      {
+        "command": "nebula.customizations",
+        "title": "Customizations",
+        "category": "Nebula"
+      },
+      {
+        "command": "nebula.agentSettings",
+        "title": "Agent Settings",
+        "category": "Nebula"
+      },
+      {
+        "command": "nebula.openUsage",
+        "title": "Usage",
+        "category": "Nebula",
+        "icon": "$(pulse)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "nebula.newConversation",
+          "when": "view == nebula.agentView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "nebula.history",
+          "when": "view == nebula.agentView",
+          "group": "navigation@2"
+        },
+        {
+          "command": "nebula.closeAgent",
+          "when": "view == nebula.agentView",
+          "group": "navigation@9"
+        },
+        {
+          "command": "nebula.openAgentManager",
+          "when": "view == nebula.agentView",
+          "group": "1_agent@1"
+        },
+        {
+          "command": "nebula.reviewChanges",
+          "when": "view == nebula.agentView",
+          "group": "1_agent@2"
+        },
+        {
+          "command": "nebula.customizations",
+          "when": "view == nebula.agentView",
+          "group": "2_config@1"
+        },
+        {
+          "command": "nebula.agentSettings",
+          "when": "view == nebula.agentView",
+          "group": "2_config@2"
+        },
+        {
+          "command": "nebula.updateEngine",
+          "when": "view == nebula.agentView",
+          "group": "3_account@1"
+        },
+        {
+          "command": "nebula.importAntigravity",
+          "when": "view == nebula.agentView",
+          "group": "3_account@2"
+        },
+        {
+          "command": "nebula.signOut",
+          "when": "view == nebula.agentView",
+          "group": "3_account@3"
+        },
+        {
+          "command": "nebula.openUsage",
+          "when": "view == nebula.agentView",
+          "group": "1_agent@3"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "nebula.focusAgent",
+          "when": "editorHasSelection",
+          "group": "navigation@0"
+        },
+        {
+          "command": "nebula.inlineEdit",
+          "when": "editorHasSelection",
+          "group": "navigation@1"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "nebula.closeAgent",
+          "when": "false"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "nebula.focusAgent",
+        "key": "ctrl+l",
+        "mac": "cmd+l"
+      },
+      {
+        "command": "nebula.openAgentManager",
+        "key": "ctrl+e",
+        "mac": "cmd+e"
+      },
+      {
+        "command": "nebula.inlineEdit",
+        "key": "ctrl+i",
+        "mac": "cmd+i",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "nebula.newConversation",
+        "key": "ctrl+shift+l",
+        "mac": "cmd+shift+l"
+      }
+    ],
+    "configuration": {
+      "title": "Nebula Agent",
+      "properties": {
+        "nebula.model": {
+          "type": "string",
+          "default": "opus",
+          "description": "Model used by the agent. The list in the agent panel comes live from Claude, so new models appear automatically."
+        },
+        "nebula.conversationMode": {
+          "type": "string",
+          "default": "planning",
+          "enum": [
+            "planning",
+            "fast"
+          ],
+          "enumDescriptions": [
+            "Agent plans with a task list before acting — best for larger work.",
+            "Agent acts directly — best for quick tasks."
+          ]
+        },
+        "nebula.reviewPolicy": {
+          "type": "string",
+          "default": "acceptEdits",
+          "enum": [
+            "default",
+            "acceptEdits",
+            "bypassPermissions"
+          ],
+          "enumDescriptions": [
+            "Ask before every edit and command.",
+            "Apply edits automatically (review afterwards); ask before commands.",
+            "Never ask (full autonomy)."
+          ]
+        },
+        "nebula.effort": {
+          "type": "string",
+          "default": "high",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
+        }
+      }
+    },
+    "themes": [
+      {
+        "label": "Nebula Dark",
+        "uiTheme": "vs-dark",
+        "path": "./themes/nebula-dark-color-theme.json"
+      }
+    ],
+    "configurationDefaults": {
+      "workbench.colorTheme": "Nebula Dark",
+      "chat.disableAIFeatures": true,
+      "workbench.secondarySideBar.defaultVisibility": "visible",
+      "workbench.layoutControl.enabled": true,
+      "editor.fontFamily": "'Cascadia Code', 'JetBrains Mono', Consolas, monospace",
+      "editor.fontLigatures": true,
+      "editor.smoothScrolling": true,
+      "editor.cursorBlinking": "smooth",
+      "editor.cursorSmoothCaretAnimation": "on",
+      "editor.bracketPairColorization.enabled": true,
+      "editor.guides.bracketPairs": "active",
+      "workbench.list.smoothScrolling": true,
+      "terminal.integrated.smoothScrolling": true,
+      "workbench.tree.indent": 14
+    }
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.302",
+    "marked": "^18.1.1",
+    "dompurify": "^3.4.17"
+  },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true
+    },
+    "virtualWorkspaces": false
+  }
+}
