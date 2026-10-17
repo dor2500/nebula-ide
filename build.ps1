@@ -6,7 +6,7 @@ $here    = $PSScriptRoot
 $work    = Join-Path $env:TEMP 'nb'                    # short path: avoids the 260-char limit
 $zip     = Join-Path $work 'vscodium.zip'
 $stage   = Join-Path $work 'Nebula IDE'
-$version = '1.1.0'
+$version = '1.2.0'
 $vscodiumUrl = 'https://github.com/VSCodium/vscodium/releases/download/1.140.06880/VSCodium-win32-x64-1.140.06880.zip'
 $rcedit   = Join-Path $env:LOCALAPPDATA 'electron-builder\Cache\winCodeSign\winCodeSign-2.6.0\rcedit-x64.exe'
 $makensis = Join-Path $env:LOCALAPPDATA 'electron-builder\Cache\nsis\nsis-3.0.4.1\Bin\makensis.exe'
@@ -98,15 +98,26 @@ $ext = Join-Path $app 'extensions\nebula-agent'
 Copy-Item -Recurse (Join-Path $here 'extension') $ext
 Get-ChildItem $ext -Recurse -Include *.map, *.pdb, *.d.ts, *.d.mts | Remove-Item -Force
 
-# ---- built-in Remote - SSH (Open VSX), like Antigravity's remote support ----
-$sshVsix = Join-Path $work 'open-remote-ssh.vsix'
-if (-not (Test-Path $sshVsix)) { curl.exe -sL -o $sshVsix 'https://open-vsx.org/api/jeanp413/open-remote-ssh/0.4.0/file/jeanp413.open-remote-ssh-0.4.0.vsix' }
-$sshTmp = Join-Path $work 'ssh-x'
-if (Test-Path $sshTmp) { Remove-Item -Recurse -Force $sshTmp }
-Copy-Item $sshVsix "$sshVsix.zip" -Force
-Expand-Archive "$sshVsix.zip" $sshTmp; Remove-Item "$sshVsix.zip"
-Move-Item (Join-Path $sshTmp 'extension') (Join-Path $app 'extensions\open-remote-ssh')
-Remove-Item -Recurse -Force $sshTmp
+# ---- built-in extensions from Open VSX (all MIT): Remote - SSH, file icons, popular themes ----
+function Add-OpenVsx([string]$publisher, [string]$name, [string]$version) {
+  $vsix = Join-Path $work "$publisher.$name-$version.vsix"
+  if (-not (Test-Path $vsix)) { curl.exe -sfL -o $vsix "https://open-vsx.org/api/$publisher/$name/$version/file/$publisher.$name-$version.vsix"; if ($LASTEXITCODE) { throw "Download failed: $publisher.$name" } }
+  $tmp = Join-Path $work 'vsix-x'
+  if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
+  Copy-Item $vsix "$vsix.zip" -Force
+  Expand-Archive "$vsix.zip" $tmp; Remove-Item "$vsix.zip"
+  Move-Item (Join-Path $tmp 'extension') (Join-Path $app "extensions\$publisher.$name")
+  Remove-Item -Recurse -Force $tmp
+}
+Add-OpenVsx 'jeanp413' 'open-remote-ssh' '0.4.0'
+Add-OpenVsx 'PKief' 'material-icon-theme' '5.39.0'
+Add-OpenVsx 'dracula-theme' 'theme-dracula' '2.25.1'
+Add-OpenVsx 'zhuangtongfa' 'material-theme' '3.20.3'
+Add-OpenVsx 'Catppuccin' 'catppuccin-vsc' '3.19.0'
+Add-OpenVsx 'GitHub' 'github-vscode-theme' '6.3.5'
+Add-OpenVsx 'enkia' 'tokyo-night' '1.1.2'
+Add-OpenVsx 'sainnhe' 'gruvbox-material' '6.5.2'
+Add-OpenVsx 'arcticicestudio' 'nord-visual-studio-code' '0.19.0'
 
 Write-Host "Staged app: $stage"
 if ($SkipInstaller) { return }

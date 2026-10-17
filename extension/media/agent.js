@@ -142,6 +142,7 @@
         return d;
       }
       case 'error': return h('div', 'errbox', esc(it.text));
+      case 'note': { const d = h('div', 'note', `${I.folder}<span>${esc(it.text)}</span>`); return d; }
     }
     return h('div');
   }
@@ -241,6 +242,7 @@
         <div class="p-head"><span>Projects</span><span class="grow"></span><button class="link" id="pfolder" title="${esc(st.projectsDir || '')}">Show folder</button></div>
         ${projects.length ? projects.map((p) => `<button class="proj" data-p="${esc(p.path)}">${I.folder}<span class="pn">${esc(p.name)}</span><span class="muted small">${ago(p.modified)}</span></button>`).join('') : '<div class="muted small p-empty">No projects yet. Create one to get started.</div>'}
         <div class="p-actions"><button class="primary" id="newproj">${I.plus}New project</button><button class="link" id="openf">Open other folder…</button></div>
+        <div class="muted small p-hint">Or just describe what to build below — a project folder is created for it automatically.</div>
       </div>`;
     $$('.proj', el).forEach((b) => (b.onclick = () => post({ type: 'openProject', path: b.dataset.p })));
     $('#newproj', el).onclick = () => post({ type: 'newProject' });

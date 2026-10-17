@@ -15,7 +15,7 @@ let caps = { models: [], commands: [], newModels: [] };
 
 const cfg = () => vscode.workspace.getConfiguration('nebula');
 const workspaceRoot = () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-const relPath = (p) => { const r = workspaceRoot(); return r && p && p.toLowerCase().startsWith(r.toLowerCase() + path.sep) ? p.slice(r.length + 1) : p; };
+const relPath = (p, base) => { const r = base || workspaceRoot(); return r && p && p.toLowerCase().startsWith(r.toLowerCase() + path.sep) ? p.slice(r.length + 1) : p; };
 const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
 const log = (s) => output?.appendLine(`[${new Date().toLocaleTimeString()}] ${s}`);
 const anyBusy = () => [...sessions.values()].some((s) => s.busy);
@@ -99,8 +99,46 @@ function listProjects(limit = 12) {
       .sort((a, b) => b.modified - a.modified).slice(0, limit);
   } catch { return []; }
 }
+// "Add a dark mode toggle" -> "add-a-dark-mode-toggle"; keeps Hebrew and other scripts.
+function projectNameFrom(text) {
+  const words = String(text).toLowerCase().replace(/[`'"]/g, '').match(/[\p{L}\p{N}]+/gu) || [];
+  const name = words.slice(0, 5).join('-').slice(0, 40).replace(/-+$/, '');
+  return name || `project-${new Date().toISOString().slice(0, 10)}`;
+}
+function createProjectFolder(name) {
+  const dir = projectsDir();
+  let p = path.join(dir, name), n = 2;
+  while (fs.existsSync(p)) p = path.join(dir, `${name}-${n++}`);
+  fs.mkdirSync(p, { recursive: true });
+  return p;
+}
+const GITIGNORE = { node: 'node_modules/\ndist/\n.env\n', python: '__pycache__/\n.venv/\n*.pyc\n.env\n', web: '.DS_Store\n', empty: '' };
+const TEMPLATES = [
+  { id: 'empty', label: '$(file) Empty project', description: 'Just a folder with a README' },
+  { id: 'web', label: '$(globe) Web page', description: 'index.html, styles.css, script.js' },
+  { id: 'node', label: '$(server) Node.js', description: 'package.json and src/index.js' },
+  { id: 'python', label: '$(symbol-namespace) Python', description: 'main.py and requirements.txt' },
+];
+function writeTemplate(p, id, name) {
+  const w = (rel, txt) => { fs.mkdirSync(path.dirname(path.join(p, rel)), { recursive: true }); fs.writeFileSync(path.join(p, rel), txt); };
+  w('README.md', `# ${name}\n`);
+  if (GITIGNORE[id]) w('.gitignore', GITIGNORE[id]);
+  if (id === 'web') {
+    w('index.html', `<!doctype html>\n<html lang="en">\n<head>\n  <meta charset="utf-8" />\n  <meta name="viewport" content="width=device-width, initial-scale=1" />\n  <title>${name}</title>\n  <link rel="stylesheet" href="styles.css" />\n</head>\n<body>\n  <main>\n    <h1>${name}</h1>\n  </main>\n  <script src="script.js"></script>\n</body>\n</html>\n`);
+    w('styles.css', `body {\n  margin: 0;\n  font-family: system-ui, sans-serif;\n}\n\nmain {\n  max-width: 720px;\n  margin: 48px auto;\n  padding: 0 16px;\n}\n`);
+    w('script.js', `// ${name}\n`);
+  } else if (id === 'node') {
+    w('package.json', JSON.stringify({ name: name.toLowerCase().replace(/[^a-z0-9-]/g, '-'), version: '0.1.0', private: true, type: 'module', scripts: { start: 'node src/index.js' } }, null, 2) + '\n');
+    w('src/index.js', `console.log('Hello from ${name}');\n`);
+  } else if (id === 'python') {
+    w('main.py', `def main():\n    print("Hello from ${name}")\n\n\nif __name__ == "__main__":\n    main()\n`);
+    w('requirements.txt', '');
+  }
+}
 async function newProject() {
   const dir = projectsDir();
+  const tpl = await vscode.window.showQuickPick(TEMPLATES, { placeHolder: 'Start from a template' });
+  if (!tpl) return;
   const name = await vscode.window.showInputBox({
     prompt: `New project in ${dir}`, placeHolder: 'my-app', ignoreFocusOut: true,
     validateInput: (v) => (!v.trim() ? null : /[<>:"/\\|?*]/.test(v) ? 'A name can’t contain < > : " / \\ | ? *' : fs.existsSync(path.join(dir, v.trim())) ? 'A project with this name already exists' : null),
@@ -108,6 +146,8 @@ async function newProject() {
   if (!name || !name.trim()) return;
   const p = path.join(dir, name.trim());
   fs.mkdirSync(p, { recursive: true });
+  writeTemplate(p, tpl.id, name.trim());
+  await new Promise((r) => execFile('git', ['init', '-q'], { cwd: p, windowsHide: true }, () => r())); // fine if git isn't installed
   vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(p), { forceReuseWindow: !workspaceRoot() });
 }
 async function openProject(p) {
@@ -291,14 +331,35 @@ class Session {
   }
 }
 
+// Conversations are stored globally, tagged with their project folder, so a chat started without a
+// folder follows the project folder that gets created for it.
+const SESSIONS_KEY = 'nebula.sessions.v2';
+const deletedIds = new Set();
+const sameDir = (a, b) => !!a && !!b && path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
+function belongsHere(d) {
+  const root = workspaceRoot();
+  return root ? sameDir(d.cwd, root) : !d.cwd || sameDir(d.cwd, projectsDir());
+}
 function persist() {
-  const all = [...sessions.values()].filter((s) => s.items.length || s.id === activeId).sort((a, b) => b.updated - a.updated).slice(0, 50).map((s) => s.toJSON());
-  ctx.workspaceState.update('nebula.sessions', all);
+  const mine = [...sessions.values()].filter((s) => s.items.length || s.id === activeId).map((s) => s.toJSON());
+  const others = ctx.globalState.get(SESSIONS_KEY, []).filter((d) => !sessions.has(d.id) && !deletedIds.has(d.id));
+  const all = [...mine, ...others].sort((a, b) => b.updated - a.updated).slice(0, 300);
+  ctx.globalState.update(SESSIONS_KEY, all);
   ctx.workspaceState.update('nebula.activeId', activeId);
 }
 function loadSessions() {
-  for (const d of ctx.workspaceState.get('nebula.sessions', [])) sessions.set(d.id, new Session(d));
+  const legacy = ctx.workspaceState.get('nebula.sessions', []); // v1 stored per window
+  if (legacy.length) {
+    const root = workspaceRoot();
+    const store = ctx.globalState.get(SESSIONS_KEY, []);
+    for (const d of legacy) if (!store.some((x) => x.id === d.id)) store.push({ ...d, cwd: d.cwd || root });
+    ctx.globalState.update(SESSIONS_KEY, store);
+    ctx.workspaceState.update('nebula.sessions', undefined);
+  }
+  for (const d of ctx.globalState.get(SESSIONS_KEY, [])) if (belongsHere(d)) sessions.set(d.id, new Session(d));
   activeId = ctx.workspaceState.get('nebula.activeId');
+  const pending = ctx.globalState.get('nebula.pendingActive'); // set just before a new chat's folder is opened
+  if (pending && sessions.has(pending)) { activeId = pending; ctx.globalState.update('nebula.pendingActive', undefined); }
   if (!sessions.has(activeId)) activeId = null;
   if (!activeId) newSession();
 }
@@ -323,7 +384,7 @@ function statePayload() {
   return {
     type: 'state', auth, caps,
     settings: { model: cfg().get('model'), mode: cfg().get('conversationMode'), policy: cfg().get('reviewPolicy'), effort: cfg().get('effort') },
-    session: { id: s.id, title: s.title, busy: s.busy, items: s.items, changes: [...s.changes.keys()].map(relPath) },
+    session: { id: s.id, title: s.title, busy: s.busy, items: s.items, changes: [...s.changes.keys()].map((p) => relPath(p, s.cwd)) },
     sessions: [...sessions.values()].filter((x) => !x.summary().empty || x.busy).sort((a, b) => b.updated - a.updated).map((x) => x.summary()),
     workspace: workspaceRoot() ? path.basename(workspaceRoot()) : null,
     engine: engine.active.version,
@@ -332,7 +393,7 @@ function statePayload() {
     usage: { context: s.context, tokens: s.usage, plan: (planUsage?.limits || []).find((l) => /session|five_hour/.test(l.key)) || null },
   };
 }
-function pushState() { if (!engine) return; const p = statePayload(); panelView?.webview.postMessage(p); managerPanel?.webview.postMessage(p); updateStatus(); if (usagePanel) pushUsage(); }
+function pushState() { if (!engine) return; const p = statePayload(); panelView?.webview.postMessage(p); managerPanel?.webview.postMessage(p); updateStatus(); if (usagePanel) pushUsage(); if (settingsPanel) pushSettings(); }
 
 function webviewHtml(webview, mode) {
   const u = (...p) => webview.asWebviewUri(vscode.Uri.joinPath(ctx.extensionUri, ...p));
@@ -345,7 +406,7 @@ function webviewHtml(webview, mode) {
 <script nonce="${nonce}" src="${u('node_modules', 'marked', 'lib', 'marked.umd.js')}"></script>
 <script nonce="${nonce}" src="${u('node_modules', 'dompurify', 'dist', 'purify.min.js')}"></script>
 <script nonce="${nonce}">window.NEBULA_MODE=${JSON.stringify(mode)};</script>
-<script nonce="${nonce}" src="${u('media', mode === 'usage' ? 'usage.js' : 'agent.js')}"></script>
+<script nonce="${nonce}" src="${u('media', mode === 'usage' ? 'usage.js' : mode === 'settings' ? 'settings.js' : 'agent.js')}"></script>
 </body></html>`;
 }
 
@@ -382,7 +443,6 @@ async function onWebviewMessage(m, webview) {
     case 'deleteSession': deleteSession(m.id); break;
     case 'setting':
       await cfg().update(m.key, m.value, vscode.ConfigurationTarget.Global);
-      if (m.key === 'reviewPolicy') for (const x of sessions.values()) x.q?.setPermissionMode(m.value).catch(() => {});
       if (m.key === 'model') for (const x of sessions.values()) x.q?.setModel(m.value).catch(() => {});
       pushState(); break;
     case 'signIn': signIn(); break;
@@ -407,7 +467,7 @@ function deleteSession(id) {
   const s = sessions.get(id);
   if (!s) return;
   if (s.busy) stopAgent(s);
-  sessions.delete(id);
+  sessions.delete(id); deletedIds.add(id);
   if (activeId === id) { activeId = null; newSession(); }
   persist(); pushState();
 }
@@ -431,11 +491,17 @@ function openManager() {
 }
 
 /* ============================== Agent runs ============================== */
-async function runAgent(s, text, context) {
+async function runAgent(s, text, context, opts = {}) {
   if (s.busy || (!text.trim() && !context.some((c) => c.image))) return;
   if (!auth.ok) { await refreshAuth(); if (!auth.ok) { vscode.window.showWarningMessage('Sign in to Claude to use the agent.', 'Sign in').then((a) => a && signIn()); return; } }
   const { query } = await loadSdk();
   if (s.title === 'New conversation') s.title = (text.trim().split('\n')[0] || 'Image').slice(0, 60);
+  // No folder open: give the chat its own project folder in the projects folder (like Antigravity's playground).
+  let newProjectDir = null;
+  if (!workspaceRoot() && !s.sdkSessionId && cfg().get('newChatCreatesProject') !== false && (!s.cwd || sameDir(s.cwd, projectsDir()))) {
+    newProjectDir = createProjectFolder(projectNameFrom(text));
+    s.cwd = newProjectDir;
+  }
   s.cwd = s.cwd || workspaceRoot() || projectsDir();
 
   const parts = [];
@@ -444,7 +510,8 @@ async function runAgent(s, text, context) {
   for (const c of context) if (c.text) parts.push(c.text);
   parts.push(text);
   const images = context.filter((c) => c.image);
-  s.upsert({ key: uid(), kind: 'user', text, chips: context.filter((c) => !c.thumb).map((c) => c.label), images: context.filter((c) => c.thumb).map((c) => c.thumb) });
+  if (opts.auto) s.upsert({ key: uid(), kind: 'note', text: opts.note || text });
+  else s.upsert({ key: uid(), kind: 'user', text, chips: context.filter((c) => !c.thumb).map((c) => c.label), images: context.filter((c) => c.thumb).map((c) => c.thumb) });
 
   s.busy = true; s.abort = new AbortController(); s.stderr = '';
   broadcast({ type: 'busy', sessionId: s.id, busy: true });
@@ -453,7 +520,7 @@ async function runAgent(s, text, context) {
     cwd: s.cwd,
     model: cfg().get('model'),
     effort: cfg().get('effort'),
-    permissionMode: cfg().get('reviewPolicy'),
+    permissionMode: 'default', // every edit/command goes through canUseTool, which applies the review policies
     includePartialMessages: true,
     pathToClaudeCodeExecutable: claudeExe(),
     abortController: s.abort,
@@ -465,6 +532,7 @@ async function runAgent(s, text, context) {
     stderr: (d) => { s.stderr = (s.stderr + d).slice(-4000); },
   };
   if (s.sdkSessionId) options.resume = s.sdkSessionId;
+  if (cfg().get('browserAgent')) options.mcpServers = { browser: process.platform === 'win32' ? { type: 'stdio', command: 'cmd', args: ['/c', 'npx', '-y', '@playwright/mcp@latest'] } : { type: 'stdio', command: 'npx', args: ['-y', '@playwright/mcp@latest'] } };
 
   const promptText = parts.join('\n\n');
   // Images need the structured (streaming) prompt form; plain text keeps the simple string form.
@@ -498,9 +566,20 @@ async function runAgent(s, text, context) {
     s.pending.clear();
     for (const it of s.items) if (it.kind === 'tool' && it.status === 'running') s.upsert({ key: it.key, status: 'error' });
     s.items = s.items.filter((x) => x.kind !== 'changes'); broadcast({ type: 'remove', sessionId: s.id, key: 'changes-' + s.id });
-    if (s.changes.size) s.upsert({ key: 'changes-' + s.id, kind: 'changes', files: [...s.changes.keys()].map(relPath) });
+    if (s.changes.size) s.upsert({ key: 'changes-' + s.id, kind: 'changes', files: [...s.changes.keys()].map((p) => relPath(p, s.cwd)) });
     broadcast({ type: 'busy', sessionId: s.id, busy: false });
+    if (!opts.auto && cfg().get('autoFixLints') !== false && s.changes.size) setTimeout(() => autoFixLints(s), 2500);
     fileCache = null;
+    if (newProjectDir && !workspaceRoot()) {
+      const hasFiles = (() => { try { return fs.readdirSync(newProjectDir).length > 0; } catch { return false; } })();
+      if (!hasFiles && s.items.some((x) => x.kind === 'error' || (x.kind === 'result' && !x.ok))) { try { fs.rmdirSync(newProjectDir); } catch {} s.cwd = undefined; }
+      else {
+        s.upsert({ key: uid(), kind: 'note', text: `Saved as a project: ${path.basename(newProjectDir)}`, path: newProjectDir });
+        persist();
+        ctx.globalState.update('nebula.pendingActive', s.id);
+        setTimeout(() => vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(newProjectDir), { forceReuseWindow: true }), 1500);
+      }
+    }
     persist(); pushState(); pushUsage();
     fetchContext(s);
     if (!planUsage || Date.now() - planUsage.fetched > 60000) fetchPlanUsage();
@@ -548,8 +627,25 @@ function handleMessage(s, m, blocks) {
 
 function stopAgent(s) { if (!s?.busy) return; s.q?.interrupt().catch(() => s.abort?.abort()); }
 
+/* Review policies (like Antigravity): file edits follow 'Review Policy', terminal commands follow 'Auto Execution'.
+   Each is alwaysProceed | agentDecides | requestReview. */
+const LEGACY_POLICY = { default: 'requestReview', acceptEdits: 'agentDecides', bypassPermissions: 'alwaysProceed' };
+const policy = (key) => { const v = cfg().get(key) || 'agentDecides'; return LEGACY_POLICY[v] || v; };
+const EDIT_TOOLS = /^(Edit|Write|MultiEdit|NotebookEdit)$/;
+const CMD_TOOLS = /^(Bash|PowerShell)$/;
+const SAFE_CMD = /^(ls|dir|pwd|cd|cat|type|echo|head|tail|wc|grep|rg|find|findstr|where|which|tree|git (status|diff|log|show|branch|rev-parse|remote -v|ls-files)|node (--check|-c|-v|--version|-e)|npm (test|t|run (test|lint|build|check|typecheck)|ls|-v|--version|outdated)|npx (tsc|eslint|prettier --check|vitest run|jest)|tsc|eslint|pytest|python3? (-m (pytest|py_compile|unittest)|--version|-V)|go (build|test|vet|version)|cargo (build|test|check)|dotnet (build|test)|Get-(ChildItem|Content|Item|Location|Command)|Select-String|Test-Path|Resolve-Path|Measure-Object)\b/i;
+const RISKY_CMD = /\b(rm|del|erase|rmdir|rd|Remove-Item|mv|move|Move-Item|format|shutdown|reboot|curl|wget|Invoke-WebRequest|Invoke-RestMethod|iwr|irm|iex|Invoke-Expression|Start-Process|git (push|reset|clean|checkout|rebase)|npm (publish|install|i|uninstall)|pip install|Set-ExecutionPolicy|reg|takeown|icacls)\b|>|\bsudo\b/i;
+function isSafeCommand(cmd = '') {
+  if (RISKY_CMD.test(cmd)) return false;
+  return cmd.split(/&&|\|\||;|\|/).map((x) => x.trim()).filter(Boolean).every((x) => SAFE_CMD.test(x));
+}
+function autoDecision(toolName, input) {
+  if (EDIT_TOOLS.test(toolName)) return policy('reviewPolicy') === 'requestReview' ? 'ask' : 'allow';
+  if (CMD_TOOLS.test(toolName)) { const p = policy('autoExecution'); return p === 'alwaysProceed' ? 'allow' : p === 'requestReview' ? 'ask' : isSafeCommand(input?.command) ? 'allow' : 'ask'; }
+  return 'allow';
+}
 function askPermission(s, toolName, input, opts) {
-  if (s.alwaysAllow.has(toolName)) return Promise.resolve({ behavior: 'allow', updatedInput: input });
+  if (s.alwaysAllow.has(toolName) || autoDecision(toolName, input) === 'allow') return Promise.resolve({ behavior: 'allow', updatedInput: input });
   return new Promise((resolve) => {
     const key = uid();
     s.pending.set(key, (r) => resolve(r));
@@ -576,7 +672,7 @@ function snapshot(s, input = {}) {
 }
 const snapScheme = 'nebula-original';
 const snapProvider = { provideTextDocumentContent: (uri) => { const q = JSON.parse(uri.query); return sessions.get(q.s)?.changes.get(q.p) ?? ''; } };
-const absFor = (s, p) => [...s.changes.keys()].find((k) => k === p || relPath(k) === p) || p;
+const absFor = (s, p) => [...s.changes.keys()].find((k) => k === p || relPath(k) === p || relPath(k, s.cwd) === p) || p;
 function reviewFile(s, p) {
   if (!s || !p) return;
   const abs = absFor(s, p);
@@ -589,7 +685,7 @@ function reviewAll(s) {
   for (const p of s.changes.keys()) reviewFile(s, p);
 }
 function setChangesItem(s, resolved) {
-  s.upsert({ key: 'changes-' + s.id, kind: 'changes', files: [...s.changes.keys()].map(relPath), resolved: s.changes.size ? undefined : resolved });
+  s.upsert({ key: 'changes-' + s.id, kind: 'changes', files: [...s.changes.keys()].map((p) => relPath(p, s.cwd)), resolved: s.changes.size ? undefined : resolved });
   persist(); pushState();
 }
 function acceptAll(s) { if (!s) return; s.changes.clear(); setChangesItem(s, 'accepted'); }
@@ -649,7 +745,7 @@ function updateStatus() {
   if (!statusItem) return;
   const busy = [...sessions.values()].filter((s) => s.busy).length;
   statusItem.text = busy ? `$(loading~spin) Agent ×${busy}` : auth.ok ? 'Nebula - Settings' : '$(sparkle) Sign in to Claude';
-  statusItem.command = auth.ok ? 'nebula.moreOptions' : 'nebula.signIn';
+  statusItem.command = auth.ok ? 'nebula.openSettings' : 'nebula.signIn';
   statusItem.tooltip = auth.ok ? `Signed in as ${auth.label} · Claude engine ${engine?.active.version}` : 'Sign in with your Claude account';
 }
 
@@ -670,13 +766,14 @@ function showHistory() {
   qp.show();
 }
 async function moreOptions() {
-  const mode = cfg().get('conversationMode'), policy = cfg().get('reviewPolicy');
-  const policyName = { default: 'Always ask', acceptEdits: 'Agent decides', bypassPermissions: 'Always proceed' };
+  const mode = cfg().get('conversationMode'), policyV = policy('reviewPolicy');
+  const policyName = { alwaysProceed: 'Always proceed', agentDecides: 'Agent decides', requestReview: 'Request review' };
   const items = [
     { label: 'Agent', kind: vscode.QuickPickItemKind.Separator },
     { label: '$(layout) Open Agent Manager', cmd: 'nebula.openAgentManager', description: 'Ctrl+E' },
     { label: `$(lightbulb) Conversation mode: ${mode === 'planning' ? 'Planning' : 'Fast'}`, action: 'mode', description: 'Planning lays out a task list first; Fast acts directly' },
-    { label: `$(shield) Review policy: ${policyName[policy]}`, action: 'policy', description: 'When the agent must ask before editing or running commands' },
+    { label: `$(shield) Review policy: ${policyName[policyV]}`, action: 'policy', description: 'When the agent must ask before editing files' },
+    { label: '$(settings-gear) Settings', description: 'Agent, appearance, account, shortcuts', cmd: 'nebula.openSettings' },
     { label: '$(git-compare) Review agent changes', cmd: 'nebula.reviewChanges' },
     { label: '$(pulse) Usage', description: 'Plan limits, tokens and context', cmd: 'nebula.openUsage' },
     { label: '$(book) Customizations', description: 'Rules and MCP servers', cmd: 'nebula.customizations' },
@@ -692,8 +789,8 @@ async function moreOptions() {
   if (pick.cmd) return vscode.commands.executeCommand(pick.cmd);
   if (pick.action === 'mode') return cfg().update('conversationMode', mode === 'planning' ? 'fast' : 'planning', vscode.ConfigurationTarget.Global);
   if (pick.action === 'policy') {
-    const p = await vscode.window.showQuickPick(Object.entries(policyName).map(([value, label]) => ({ label, value, picked: value === policy })), { placeHolder: 'Review policy' });
-    if (p) { await cfg().update('reviewPolicy', p.value, vscode.ConfigurationTarget.Global); for (const x of sessions.values()) x.q?.setPermissionMode(p.value).catch(() => {}); }
+    const p = await vscode.window.showQuickPick(Object.entries(policyName).map(([value, label]) => ({ label, value, picked: value === policyV })), { placeHolder: 'Review policy' });
+    if (p) await cfg().update('reviewPolicy', p.value, vscode.ConfigurationTarget.Global);
     return;
   }
   if (pick.action === 'log') return output.show();
@@ -747,14 +844,13 @@ function readJson(p, fallback) {
   try { return JSON.parse(stripJsonc(t)); } catch { return fallback; }
 }
 
-async function importAntigravity() {
-  const srcs = antigravitySources();
-  if (!srcs.length) { vscode.window.showInformationMessage('No Antigravity installation data was found.'); return; }
+async function importAntigravity(srcs = antigravitySources(), from = 'Antigravity') {
+  if (!srcs.length) { vscode.window.showInformationMessage(`No ${from} installation data was found.`); return; }
   const destExt = path.join(os.homedir(), '.nebula-ide', 'extensions');
   const destUser = path.resolve(ctx.globalStorageUri.fsPath, '..', '..'); // .../Nebula IDE/User
   fs.mkdirSync(destExt, { recursive: true }); fs.mkdirSync(destUser, { recursive: true });
   let copied = 0, settingsMerged = 0;
-  await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Importing from Antigravity', cancellable: false }, async (progress) => {
+  await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Importing from ${from}`, cancellable: false }, async (progress) => {
     for (const src of srcs) {
       // extensions: copy folders + merge the extensions.json registry with rewritten paths
       if (fs.existsSync(src.ext)) {
@@ -764,7 +860,7 @@ async function importAntigravity() {
         for (const e of readJson(path.join(src.ext, 'extensions.json'), [])) {
           const id = e.identifier?.id?.toLowerCase();
           const rel = e.relativeLocation;
-          if (!id || !rel || have.has(id) || id.startsWith('google.') || id.includes('antigravity')) continue;
+          if (!id || !rel || have.has(id) || /^(google\.|anysphere\.|codeium\.|github\.copilot)|antigravity|windsurf|cursor/.test(id)) continue;
           const from = path.join(src.ext, rel), to = path.join(destExt, rel);
           if (!fs.existsSync(from)) continue;
           progress.report({ message: e.identifier.id });
@@ -792,8 +888,133 @@ async function importAntigravity() {
     }
   });
   ctx.globalState.update('nebula.importDone2', true);
-  const a = await vscode.window.showInformationMessage(`Imported ${copied} extension(s) and ${settingsMerged} setting(s) from Antigravity. Reload to activate them.`, 'Reload Now');
+  const a = await vscode.window.showInformationMessage(`Imported ${copied} extension(s) and ${settingsMerged} setting(s) from ${from}. Reload to activate them.`, 'Reload Now');
   if (a) vscode.commands.executeCommand('workbench.action.reloadWindow');
+}
+
+/* ============================== Import from other editors ============================== */
+function editorSources() {
+  const home = os.homedir();
+  const appData = process.env.APPDATA || path.join(home, 'AppData', 'Roaming');
+  return [
+    { name: 'Antigravity', ext: path.join(home, '.antigravity-ide', 'extensions'), user: path.join(appData, 'Antigravity IDE', 'User') },
+    { name: 'Antigravity', ext: path.join(home, '.antigravity', 'extensions'), user: path.join(appData, 'Antigravity', 'User') },
+    { name: 'VS Code', ext: path.join(home, '.vscode', 'extensions'), user: path.join(appData, 'Code', 'User') },
+    { name: 'Cursor', ext: path.join(home, '.cursor', 'extensions'), user: path.join(appData, 'Cursor', 'User') },
+    { name: 'Windsurf', ext: path.join(home, '.windsurf', 'extensions'), user: path.join(appData, 'Windsurf', 'User') },
+    { name: 'VSCodium', ext: path.join(home, '.vscode-oss', 'extensions'), user: path.join(appData, 'VSCodium', 'User') },
+  ].filter((c) => fs.existsSync(c.ext) || fs.existsSync(c.user));
+}
+async function importFromEditor() {
+  const found = editorSources();
+  const names = [...new Set(found.map((f) => f.name))];
+  if (!names.length) return vscode.window.showInformationMessage('No other editors (Antigravity, VS Code, Cursor, Windsurf, VSCodium) were found on this computer.');
+  const pick = await vscode.window.showQuickPick(names.map((n) => ({ label: n, description: 'extensions, settings, keybindings, snippets' })), { placeHolder: 'Import from…' });
+  if (pick) importAntigravity(found.filter((f) => f.name === pick.label), pick.label);
+}
+
+/* ============================== Auto-fix lints ============================== */
+// After the agent changes files, give the language servers a moment, then let the agent fix any errors it introduced (once).
+async function autoFixLints(s) {
+  if (s.busy || s.fixingLints) return;
+  const files = [...s.changes.keys()].filter((p) => fs.existsSync(p));
+  for (const p of files) { try { await vscode.workspace.openTextDocument(vscode.Uri.file(p)); } catch {} }
+  await new Promise((r) => setTimeout(r, 2500));
+  const problems = [];
+  for (const p of files) for (const d of vscode.languages.getDiagnostics(vscode.Uri.file(p))) {
+    if (d.severity === vscode.DiagnosticSeverity.Error) problems.push(`${relPath(p)}:${d.range.start.line + 1}: ${d.message}${d.source ? ` (${d.source})` : ''}`);
+  }
+  if (!problems.length) return;
+  s.fixingLints = true;
+  try {
+    await runAgent(s, `Your last changes left these errors. Fix them:\n${problems.slice(0, 30).join('\n')}`, [], { auto: true, note: `Auto-fixing ${problems.length} error${problems.length > 1 ? 's' : ''} in changed files` });
+  } finally { s.fixingLints = false; }
+}
+
+/* ============================== Commit messages ============================== */
+async function generateCommitMessage(arg) {
+  const git = vscode.extensions.getExtension('vscode.git')?.exports?.getAPI(1);
+  if (!git || !git.repositories.length) return vscode.window.showInformationMessage('No git repository is open.');
+  const repo = (arg?.rootUri && git.repositories.find((r) => r.rootUri.toString() === arg.rootUri.toString())) || git.repositories[0];
+  let diff = await repo.diff(true);
+  if (!diff.trim()) diff = await repo.diff(false);
+  if (!diff.trim()) return vscode.window.showInformationMessage('There are no changes to describe.');
+  await vscode.window.withProgress({ location: vscode.ProgressLocation.SourceControl, title: 'Generating commit message…' }, async () => {
+    try {
+      const { query } = await loadSdk();
+      let out = '';
+      const q = query({
+        prompt: `Write a git commit message for this diff. First line: imperative summary under 72 characters. Then, only if useful, a blank line and a few short bullet points. Output only the message.\n\n${diff.slice(0, 60000)}`,
+        options: { pathToClaudeCodeExecutable: claudeExe(), env: await agentEnv(), cwd: repo.rootUri.fsPath, model: 'haiku', tools: [], maxTurns: 1, settingSources: [], systemPrompt: 'You write concise, accurate git commit messages.' },
+      });
+      for await (const m of q) if (m.type === 'result' && !m.is_error) out = m.result || '';
+      out = out.trim().replace(/^```\w*\n?|```$/g, '').trim();
+      if (out) repo.inputBox.value = out; else vscode.window.showWarningMessage('Could not generate a commit message.');
+    } catch (e) { vscode.window.showWarningMessage('Could not generate a commit message: ' + (e?.message || e)); }
+  });
+}
+
+/* ============================== Browser ============================== */
+async function openBrowser() {
+  const url = await vscode.window.showInputBox({ prompt: 'Open in the built-in browser', value: ctx.globalState.get('nebula.lastUrl', 'http://localhost:3000'), ignoreFocusOut: true });
+  if (!url) return;
+  ctx.globalState.update('nebula.lastUrl', url);
+  vscode.commands.executeCommand('simpleBrowser.show', /^https?:\/\//.test(url) ? url : 'http://' + url);
+}
+
+/* ============================== Settings page ============================== */
+let settingsPanel = null;
+const SHORTCUTS = [
+  ['Ctrl+L', 'Open agent (adds the selected code)'], ['Ctrl+Shift+L', 'New conversation'], ['Ctrl+E', 'Agent Manager'],
+  ['Ctrl+I', 'Edit selection with agent'], ['Ctrl+/', 'Select model (in the agent panel)'], ['Ctrl+V', 'Paste an image into the agent'],
+  ['Enter', 'Send'], ['Shift+Enter', 'New line'], ['Esc', 'Stop the agent'], ['@', 'Mention a file'], ['/', 'Actions and commands'],
+];
+function settingsState() {
+  const themes = new Set(), icons = [['null', 'None']];
+  for (const e of vscode.extensions.all) {
+    for (const t of e.packageJSON?.contributes?.themes || []) themes.add(t.label || t.id);
+    for (const t of e.packageJSON?.contributes?.iconThemes || []) icons.push([t.id, t.label || t.id]);
+  }
+  const wb = vscode.workspace.getConfiguration('workbench');
+  return {
+    type: 'settingsState', auth, engine: engine.active.version, projectsDir: projectsDir(), shortcuts: SHORTCUTS,
+    themes: [...themes].sort((a, b) => a.localeCompare(b)), iconThemes: icons,
+    currentTheme: wb.get('colorTheme'), currentIconTheme: String(wb.get('iconTheme')),
+    settings: {
+      autoFixLints: cfg().get('autoFixLints') !== false, autoExecution: policy('autoExecution'), reviewPolicy: policy('reviewPolicy'),
+      conversationMode: cfg().get('conversationMode'), browserAgent: !!cfg().get('browserAgent'), newChatCreatesProject: cfg().get('newChatCreatesProject') !== false,
+    },
+  };
+}
+function pushSettings() { settingsPanel?.webview.postMessage(settingsState()); }
+async function changeProjectsFolder() {
+  const pick = await vscode.window.showOpenDialog({ canSelectFolders: true, canSelectFiles: false, defaultUri: vscode.Uri.file(projectsDir()), openLabel: 'Use as projects folder' });
+  if (!pick?.[0]) return;
+  await cfg().update('projectsFolder', pick[0].fsPath, vscode.ConfigurationTarget.Global);
+  await vscode.workspace.getConfiguration('files.dialog').update('defaultPath', pick[0].fsPath, vscode.ConfigurationTarget.Global);
+  pushSettings(); pushState();
+}
+function openSettings() {
+  if (settingsPanel) { settingsPanel.reveal(); return; }
+  settingsPanel = vscode.window.createWebviewPanel('nebula.settings', 'Nebula Settings', vscode.ViewColumn.Active, { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [ctx.extensionUri] });
+  settingsPanel.iconPath = new vscode.ThemeIcon('settings-gear');
+  settingsPanel.webview.html = webviewHtml(settingsPanel.webview, 'settings');
+  settingsPanel.webview.onDidReceiveMessage(async (m) => {
+    if (m.type === 'ready') pushSettings();
+    if (m.type === 'set') { await cfg().update(m.key, m.value, vscode.ConfigurationTarget.Global); pushSettings(); pushState(); }
+    if (m.type === 'theme') { await vscode.workspace.getConfiguration('workbench').update(m.kind === 'icon' ? 'iconTheme' : 'colorTheme', m.value === 'null' ? null : m.value, vscode.ConfigurationTarget.Global); pushSettings(); }
+    if (m.type === 'action') {
+      const run = {
+        customizations: () => customizations(), changeProjectsFolder, browseThemes: () => vscode.commands.executeCommand('workbench.action.selectTheme'),
+        signIn, signOut, apiKey: setApiKey, updateEngine: () => checkEngineUpdate(true), importFrom: importFromEditor,
+        advanced: () => vscode.commands.executeCommand('workbench.action.openSettings', '@ext:nebula.nebula-agent'),
+        keybindings: () => vscode.commands.executeCommand('workbench.action.openGlobalKeybindings', 'nebula.'),
+      }[m.action];
+      if (run) await run();
+      pushSettings();
+    }
+  });
+  settingsPanel.onDidDispose(() => { settingsPanel = null; });
 }
 
 /* ============================== Commands ============================== */
@@ -834,6 +1055,13 @@ async function applyFirstRunSettings() {
   await set('telemetry', 'telemetryLevel', 'off');
   ctx.globalState.update('nebula.defaultsApplied', true);
 }
+// Colored file icons by default, like Antigravity (only if the user hasn't picked an icon theme).
+async function applyIconDefault() {
+  if (ctx.globalState.get('nebula.iconDefaultApplied')) return;
+  const wb = vscode.workspace.getConfiguration('workbench');
+  if (wb.inspect('iconTheme')?.globalValue === undefined && vscode.extensions.getExtension('PKief.material-icon-theme')) await wb.update('iconTheme', 'material-icon-theme', vscode.ConfigurationTarget.Global);
+  ctx.globalState.update('nebula.iconDefaultApplied', true);
+}
 // The Open Folder / Save dialogs start in the projects folder.
 async function applyProjectsDefault() {
   if (ctx.globalState.get('nebula.projectsDefaultApplied')) return;
@@ -863,6 +1091,11 @@ function activate(context) {
     vscode.commands.registerCommand('nebula.openAgentManager', openManager),
     vscode.commands.registerCommand('nebula.openUsage', openUsage),
     vscode.commands.registerCommand('nebula.newProject', newProject),
+    vscode.commands.registerCommand('nebula.openSettings', openSettings),
+    vscode.commands.registerCommand('nebula.importFrom', importFromEditor),
+    vscode.commands.registerCommand('nebula.generateCommitMessage', generateCommitMessage),
+    vscode.commands.registerCommand('nebula.openBrowser', openBrowser),
+    vscode.commands.registerCommand('nebula.changelog', () => vscode.env.openExternal(vscode.Uri.parse('https://github.com/dor2500/nebula-ide/releases'))),
     vscode.commands.registerCommand('nebula.openProject', () => openProject()),
     vscode.commands.registerCommand('nebula.revealProjects', revealProjects),
     vscode.commands.registerCommand('nebula.inlineEdit', inlineEdit),
@@ -875,7 +1108,7 @@ function activate(context) {
     vscode.commands.registerCommand('nebula.reviewChanges', () => reviewAll(active())),
     vscode.commands.registerCommand('nebula.acceptAll', () => acceptAll(active())),
     vscode.commands.registerCommand('nebula.rejectAll', () => rejectAll(active())),
-    vscode.workspace.onDidChangeConfiguration((e) => { if (e.affectsConfiguration('nebula')) pushState(); }),
+    vscode.workspace.onDidChangeConfiguration((e) => { if (e.affectsConfiguration('nebula')) pushState(); if (e.affectsConfiguration('workbench.colorTheme') || e.affectsConfiguration('workbench.iconTheme')) pushSettings(); }),
     vscode.workspace.onDidCreateFiles(() => (fileCache = null)),
     vscode.workspace.onDidDeleteFiles(() => (fileCache = null)),
   );
@@ -888,7 +1121,7 @@ function activate(context) {
   planUsage = context.globalState.get('nebula.planUsage', null);
   const usageTimer = setInterval(fetchPlanUsage, 10 * 60 * 1000);
   context.subscriptions.push({ dispose: () => clearInterval(usageTimer) });
-  applyFirstRunSettings().then(applyProjectsDefault);
+  applyFirstRunSettings().then(applyProjectsDefault).then(applyIconDefault);
   refreshAuth().then((ok) => { pushUsage(); if (ok) { syncCapabilities(); fetchPlanUsage(); } });
 
   // Like Antigravity: the Agent panel is always open on the right at startup.

@@ -2,7 +2,7 @@
   "name": "nebula-agent",
   "displayName": "Nebula Agent",
   "description": "Claude-powered agent for Nebula IDE: agent panel, Agent Manager, change review and Antigravity import.",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "publisher": "nebula",
   "license": "MIT",
   "engines": {
@@ -150,6 +150,34 @@
         "command": "nebula.revealProjects",
         "title": "Show Projects Folder",
         "category": "Nebula"
+      },
+      {
+        "command": "nebula.openSettings",
+        "title": "Settings",
+        "category": "Nebula",
+        "icon": "$(settings-gear)"
+      },
+      {
+        "command": "nebula.importFrom",
+        "title": "Import from Another Editor (Antigravity, VS Code, Cursor, Windsurf)",
+        "category": "Nebula"
+      },
+      {
+        "command": "nebula.generateCommitMessage",
+        "title": "Generate Commit Message",
+        "category": "Nebula",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "nebula.openBrowser",
+        "title": "Open Browser",
+        "category": "Nebula",
+        "icon": "$(globe)"
+      },
+      {
+        "command": "nebula.changelog",
+        "title": "Open Changelog",
+        "category": "Nebula"
       }
     ],
     "menus": {
@@ -195,11 +223,6 @@
           "group": "3_account@1"
         },
         {
-          "command": "nebula.importAntigravity",
-          "when": "view == nebula.agentView",
-          "group": "3_account@2"
-        },
-        {
           "command": "nebula.signOut",
           "when": "view == nebula.agentView",
           "group": "3_account@3"
@@ -218,6 +241,21 @@
           "command": "nebula.openProject",
           "when": "view == nebula.agentView",
           "group": "0_project@2"
+        },
+        {
+          "command": "nebula.openSettings",
+          "when": "view == nebula.agentView",
+          "group": "2_config@0"
+        },
+        {
+          "command": "nebula.openBrowser",
+          "when": "view == nebula.agentView",
+          "group": "1_agent@4"
+        },
+        {
+          "command": "nebula.importFrom",
+          "when": "view == nebula.agentView",
+          "group": "3_account@2"
         }
       ],
       "editor/context": [
@@ -236,6 +274,13 @@
         {
           "command": "nebula.closeAgent",
           "when": "false"
+        }
+      ],
+      "scm/title": [
+        {
+          "command": "nebula.generateCommitMessage",
+          "when": "scmProvider == git",
+          "group": "navigation@-1"
         }
       ]
     },
@@ -284,17 +329,18 @@
         },
         "nebula.reviewPolicy": {
           "type": "string",
-          "default": "acceptEdits",
+          "default": "agentDecides",
           "enum": [
-            "default",
-            "acceptEdits",
-            "bypassPermissions"
+            "alwaysProceed",
+            "agentDecides",
+            "requestReview"
           ],
-          "enumDescriptions": [
-            "Ask before every edit and command.",
-            "Apply edits automatically (review afterwards); ask before commands.",
-            "Never ask (full autonomy)."
-          ]
+          "enumItemLabels": [
+            "Always Proceed",
+            "Agent Decides",
+            "Request Review"
+          ],
+          "description": "File edits: when the agent must ask before changing files."
         },
         "nebula.effort": {
           "type": "string",
@@ -311,6 +357,36 @@
           "type": "string",
           "default": "",
           "markdownDescription": "Folder where all your projects live. Empty = `Documents\\Nebula Projects`. New projects are created here and the Open Folder dialog starts here."
+        },
+        "nebula.autoExecution": {
+          "type": "string",
+          "default": "agentDecides",
+          "enum": [
+            "alwaysProceed",
+            "agentDecides",
+            "requestReview"
+          ],
+          "enumItemLabels": [
+            "Always Proceed",
+            "Agent Decides",
+            "Request Review"
+          ],
+          "description": "Terminal commands: Agent Decides runs safe read-only commands and asks before risky ones."
+        },
+        "nebula.autoFixLints": {
+          "type": "boolean",
+          "default": true,
+          "description": "After the agent changes files, automatically fix errors reported in them."
+        },
+        "nebula.browserAgent": {
+          "type": "boolean",
+          "default": false,
+          "description": "Let the agent drive a real browser (Playwright MCP) to test web apps. Requires Node.js."
+        },
+        "nebula.newChatCreatesProject": {
+          "type": "boolean",
+          "default": true,
+          "description": "With no folder open, a new chat gets its own folder in the projects folder."
         }
       }
     },
@@ -319,6 +395,16 @@
         "label": "Nebula Dark",
         "uiTheme": "vs-dark",
         "path": "./themes/nebula-dark-color-theme.json"
+      },
+      {
+        "label": "Nebula Midnight",
+        "uiTheme": "vs-dark",
+        "path": "./themes/nebula-midnight-color-theme.json"
+      },
+      {
+        "label": "Nebula Light",
+        "uiTheme": "vs",
+        "path": "./themes/nebula-light-color-theme.json"
       }
     ],
     "configurationDefaults": {

@@ -261,3 +261,26 @@ body.usage { background: var(--vscode-editor-background); }
 .bimgs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
 .bimgs img { max-width: 160px; max-height: 120px; border-radius: 6px; border: 1px solid var(--line); display: block; }
 .composer.drop { border-color: var(--focus); box-shadow: 0 0 0 2px color-mix(in srgb, var(--focus) 30%, transparent); }
+.note { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--muted); margin: 6px 0 14px; padding: 6px 10px; border: 1px dashed var(--line); border-radius: 8px; }
+.p-hint { margin-top: 10px; line-height: 1.5; }
+
+/* ---------- Settings page ---------- */
+body.settings { background: var(--vscode-editor-background); }
+.settings-page { max-width: 620px; margin: 0 auto; padding: 28px 24px 24px; }
+.settings-page section { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); padding: 14px 18px 8px; margin-bottom: 14px; }
+.settings-page h3 { font-size: 14px; font-weight: 600; margin: 0 0 6px; }
+.srow { display: flex; align-items: center; gap: 10px; min-height: 40px; }
+.srow + .srow { border-top: 1px solid color-mix(in srgb, var(--line) 50%, transparent); }
+.slabel { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
+.info { width: 14px; height: 14px; border-radius: 50%; border: 1px solid var(--muted); color: var(--muted); font-size: 9px; display: inline-grid; place-items: center; cursor: help; font-style: italic; }
+.srow select { background: var(--surface-2); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; font: inherit; font-size: 12.5px; outline: none; max-width: 240px; }
+.srow select:focus { border-color: var(--focus); }
+.srow .link, .foot .link { font-size: 13px; }
+.path { font-size: 11.5px; font-family: var(--mono); padding: 0 0 8px; word-break: break-all; }
+.foot { padding: 6px 2px 14px; }
+.tabs { display: flex; gap: 6px; border-top: 1px solid var(--line); padding-top: 10px; }
+.tabs button { padding: 5px 12px; border-radius: 7px; color: var(--muted); font-weight: 500; }
+.tabs button.on { background: var(--surface-2); color: var(--fg); }
+.keys { display: inline-flex; align-items: center; gap: 3px; }
+.keys kbd { font: 11.5px var(--mono); padding: 2px 6px; border-radius: 5px; border: 1px solid var(--line); background: var(--surface-2); }
+.keys .plus { color: var(--muted); font-size: 11px; }
