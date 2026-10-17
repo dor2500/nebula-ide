@@ -284,3 +284,20 @@ body.settings { background: var(--vscode-editor-background); }
 .keys { display: inline-flex; align-items: center; gap: 3px; }
 .keys kbd { font: 11.5px var(--mono); padding: 2px 6px; border-radius: 5px; border: 1px solid var(--line); background: var(--surface-2); }
 .keys .plus { color: var(--muted); font-size: 11px; }
+
+/* ---------- queued messages ---------- */
+#queue:empty { display: none; }
+#queue { display: flex; flex-direction: column; gap: 4px; margin-bottom: 6px; }
+.qitem { display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 10px; border: 1px dashed var(--line); border-radius: 10px; background: var(--surface); font-size: 12.5px; }
+.qtag { font-size: 10.5px; text-transform: uppercase; letter-spacing: .4px; color: var(--muted); flex: none; }
+.qt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qitem .icon svg { width: 13px; height: 13px; }
+.pop.k-model { max-height: 60vh; overflow-y: auto; }
+
+/* ---------- Claude limit reached card ---------- */
+.limitcard { border: 1px solid color-mix(in srgb, var(--warn) 55%, transparent); background: color-mix(in srgb, var(--warn) 7%, var(--surface)); border-radius: 12px; padding: 10px 12px; margin: 12px 0; }
+.limitcard.resolved { background: none; border-style: dashed; border-color: var(--line); padding: 6px 12px; }
+.lc-title { font-weight: 600; margin-bottom: 2px; }
+.lc-row { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+.lc-row select { flex: 1; min-width: 0; background: var(--surface-2); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; font: inherit; font-size: 12.5px; }
+.lc-always { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); margin-top: 8px; cursor: pointer; }

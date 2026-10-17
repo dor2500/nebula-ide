@@ -6,6 +6,7 @@ const os = require('os');
 const { execFile } = require('child_process');
 const { pathToFileURL } = require('url');
 const { Engine } = require('./engine');
+const { Proxy: ModelProxy } = require('./proxy');
 
 let ctx, engine, sdk, sdkVersion, panelView, managerPanel, statusItem, output;
 const sessions = new Map(); // id -> Session
@@ -79,6 +80,176 @@ function applyEngineWhenIdle() {
   const next = engine.resolve();
   if (next.version !== engine.active.version) { engine.active = next; log(`Now using Claude engine ${next.version}`); refreshAuth(); syncCapabilities(); }
 }
+
+/* ============================== Model providers (non-Claude models) ============================== */
+// Models from other providers run through the local translation proxy (proxy.js). The model setting is
+// "<providerId>::<model>"; plain values are Claude models. API keys live in SecretStorage.
+const PRESETS = [
+  { id: 'openrouter', name: 'OpenRouter', kind: 'openai', baseUrl: 'https://openrouter.ai/api/v1', key: true, note: 'Hundreds of models (GPT, Gemini, Llama, DeepSeek…) with one key' },
+  { id: 'openai', name: 'OpenAI', kind: 'openai', baseUrl: 'https://api.openai.com/v1', key: true, note: 'GPT models' },
+  { id: 'gemini', name: 'Google Gemini', kind: 'openai', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', key: true, note: 'Gemini models (free tier available)' },
+  { id: 'deepseek', name: 'DeepSeek', kind: 'openai', baseUrl: 'https://api.deepseek.com/v1', key: true, note: 'DeepSeek models' },
+  { id: 'groq', name: 'Groq', kind: 'openai', baseUrl: 'https://api.groq.com/openai/v1', key: true, note: 'Very fast open models' },
+  { id: 'mistral', name: 'Mistral', kind: 'openai', baseUrl: 'https://api.mistral.ai/v1', key: true, note: 'Mistral and Codestral' },
+  { id: 'xai', name: 'xAI', kind: 'openai', baseUrl: 'https://api.x.ai/v1', key: true, note: 'Grok models' },
+  { id: 'lmstudio', name: 'LM Studio (local)', kind: 'openai', baseUrl: 'http://127.0.0.1:1234/v1', key: false, lite: true, note: 'Models running in LM Studio on this computer' },
+  { id: 'custom', name: 'Custom (OpenAI-compatible)', kind: 'openai', baseUrl: '', key: true, note: 'Any OpenAI-compatible endpoint' },
+];
+let proxy = null;
+let ollama = { up: false, models: [] }; // auto-detected local Ollama
+const OLLAMA_URL = 'http://127.0.0.1:11434';
+const isProviderModel = (v) => typeof v === 'string' && v.includes('::');
+const splitModel = (v) => { const i = v.indexOf('::'); return { provider: v.slice(0, i), model: v.slice(i + 2) }; };
+const configuredProviders = () => (cfg().get('providers') || []).filter((p) => p && p.id && p.baseUrl);
+function getJson(url, headers = {}) {
+  return new Promise((resolve, reject) => {
+    const lib = url.startsWith('https') ? require('https') : require('http');
+    const req = lib.get(url, { headers, timeout: 8000 }, (res) => {
+      const chunks = []; res.on('data', (c) => chunks.push(c));
+      res.on('end', () => { if (res.statusCode >= 400) return reject(new Error(`HTTP ${res.statusCode}`)); try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); } catch (e) { reject(e); } });
+    });
+    req.on('error', reject); req.on('timeout', () => req.destroy(new Error('timeout')));
+  });
+}
+async function detectOllama() {
+  try {
+    const r = await getJson(OLLAMA_URL + '/api/tags');
+    ollama = { up: true, models: (r.models || []).map((m) => ({ id: m.name, size: m.size, family: m.details?.family, params: m.details?.parameter_size })) };
+  } catch { ollama = { up: false, models: [] }; }
+  pushState(); pushSettings();
+}
+// Everything the model menu needs: provider sections with their models.
+function providerList() {
+  const list = [];
+  if (ollama.up && ollama.models.length && cfg().get('ollamaEnabled') !== false) list.push({ id: 'ollama', name: 'Local (Ollama)', local: true, models: ollama.models.map((m) => ({ value: `ollama::${m.id}`, name: m.id, note: m.params })) });
+  for (const p of configuredProviders()) list.push({ id: p.id, name: p.name, local: !!p.lite, models: (p.models || []).map((m) => ({ value: `${p.id}::${m}`, name: m })) });
+  return list;
+}
+async function resolveProvider(id) {
+  if (id === 'ollama') return { id, kind: 'ollama', baseUrl: OLLAMA_URL, contextLength: cfg().get('localContextLength') || 16384, lite: true };
+  const p = configuredProviders().find((x) => x.id === id);
+  if (!p) return null;
+  return { ...p, apiKey: await ctx.secrets.get(`nebula.key.${id}`) };
+}
+async function fetchProviderModels(p, apiKey) {
+  const headers = apiKey ? { authorization: `Bearer ${apiKey}` } : {};
+  const r = await getJson(p.baseUrl.replace(/\/$/, '') + '/models', headers);
+  return (r.data || r.models || []).map((m) => String(m.id || m.name || '').replace(/^models\//, '')).filter(Boolean).sort();
+}
+async function addProvider() {
+  const preset = await vscode.window.showQuickPick(PRESETS.map((p) => ({ label: p.name, description: p.note, p })), { placeHolder: 'Add a model provider' });
+  if (!preset) return;
+  const p = { ...preset.p };
+  if (p.id === 'custom') {
+    const name = await vscode.window.showInputBox({ prompt: 'Name for this provider', placeHolder: 'My provider', ignoreFocusOut: true });
+    if (!name) return;
+    const url = await vscode.window.showInputBox({ prompt: 'OpenAI-compatible base URL (the part before /chat/completions)', placeHolder: 'https://api.example.com/v1', ignoreFocusOut: true });
+    if (!url) return;
+    Object.assign(p, { id: 'custom-' + uid().slice(0, 6), name, baseUrl: url.trim() });
+  }
+  let key = '';
+  if (p.key) {
+    key = await vscode.window.showInputBox({ prompt: `${p.name} API key`, password: true, ignoreFocusOut: true });
+    if (!key) return;
+  }
+  let models = [];
+  try { models = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Loading ${p.name} models…` }, () => fetchProviderModels(p, key.trim())); }
+  catch (e) { vscode.window.showWarningMessage(`Couldn't list ${p.name} models (${e.message}). You can type model names instead.`); }
+  let chosen = [];
+  if (models.length) {
+    const picks = await vscode.window.showQuickPick(models.map((m) => ({ label: m })), { canPickMany: true, placeHolder: `Choose the ${p.name} models to show in the model menu`, ignoreFocusOut: true });
+    if (!picks?.length) return;
+    chosen = picks.map((x) => x.label);
+  } else {
+    const typed = await vscode.window.showInputBox({ prompt: 'Model names, separated by commas', placeHolder: 'gpt-5, gpt-5-mini', ignoreFocusOut: true });
+    if (!typed) return;
+    chosen = typed.split(',').map((x) => x.trim()).filter(Boolean);
+  }
+  if (key) await ctx.secrets.store(`nebula.key.${p.id}`, key.trim());
+  const list = configuredProviders().filter((x) => x.id !== p.id);
+  list.push({ id: p.id, name: p.name, kind: p.kind, baseUrl: p.baseUrl, lite: !!p.lite, models: chosen });
+  await cfg().update('providers', list, vscode.ConfigurationTarget.Global);
+  vscode.window.showInformationMessage(`${p.name} added — its models are now in the model menu.`);
+  pushState(); pushSettings();
+}
+async function removeProvider(id) {
+  const p = configuredProviders().find((x) => x.id === id);
+  if (!p) return;
+  const ok = await vscode.window.showWarningMessage(`Remove ${p.name}?`, { modal: true }, 'Remove');
+  if (ok !== 'Remove') return;
+  await cfg().update('providers', configuredProviders().filter((x) => x.id !== id), vscode.ConfigurationTarget.Global);
+  await ctx.secrets.delete(`nebula.key.${id}`);
+  if (String(cfg().get('model')).startsWith(id + '::')) await cfg().update('model', 'opus', vscode.ConfigurationTarget.Global);
+  pushState(); pushSettings();
+}
+const LITE_PROMPT = `You are a coding agent inside Nebula IDE, working in the current project folder.
+Use the provided tools to read files, change files and run commands — call them, don't describe them.
+Work step by step, check your work, and keep replies short. When you change files, end with a one-line summary.`;
+// Engine options for a model from another provider.
+async function providerOptions(modelValue, base) {
+  const { provider, model } = splitModel(modelValue);
+  const p = await resolveProvider(provider);
+  if (!p) throw new Error(`Model provider "${provider}" is not set up. Add it in Settings → Models.`);
+  proxy = proxy || new ModelProxy(resolveProvider, log);
+  await proxy.start();
+  const env = { ...base.env, ANTHROPIC_BASE_URL: proxy.url(provider), ANTHROPIC_AUTH_TOKEN: 'nebula', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', DISABLE_TELEMETRY: '1',
+    ANTHROPIC_MODEL: model, ANTHROPIC_DEFAULT_OPUS_MODEL: model, ANTHROPIC_DEFAULT_SONNET_MODEL: model, ANTHROPIC_DEFAULT_HAIKU_MODEL: model, CLAUDE_CODE_SUBAGENT_MODEL: model };
+  delete env.ANTHROPIC_API_KEY;
+  const o = { ...base, env, model, strictMcpConfig: true, mcpServers: base.mcpServers || {} };
+  delete o.effort;
+  if (p.lite) { // small local models: short instructions and only the core tools so everything fits their context
+    o.systemPrompt = LITE_PROMPT + (cfg().get('conversationMode') === 'planning' ? '\nFor bigger tasks, briefly list your plan before acting.' : '');
+    o.tools = ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'];
+    o.settingSources = [];
+  }
+  return o;
+}
+// Best guess for "continue with…": a cloud provider model first, otherwise a local coding model.
+function suggestedFallback() {
+  const list = providerList();
+  const cloud = list.find((p) => !p.local && p.models.length);
+  if (cloud) return cloud.models[0].value;
+  const local = list.flatMap((p) => p.models);
+  const coders = local.filter((m) => /coder|code/i.test(m.name));
+  return (coders.find((m) => /7b|8b/i.test(m.name)) || coders[0] || local[0])?.value || null;
+}
+const sessionLimit = () => (planUsage?.limits || []).find((l) => /session|five_hour/.test(l.key));
+// Claude's limit ran out and no automatic model is set: ask in the conversation (and with a notification).
+function offerModelSwitch(s) {
+  const options = providerList().flatMap((p) => p.models.map((m) => ({ value: m.value, label: `${m.name} — ${p.name}` })));
+  const lim = sessionLimit();
+  s.upsert({ key: 'limit-' + s.id, kind: 'limit', resetsAt: lim?.resetsAt || null, options, suggested: suggestedFallback(), resolved: undefined });
+  const sug = suggestedFallback();
+  vscode.window.showWarningMessage("Claude's usage limit was reached." + (sug ? ` Continue with ${modelDisplay(sug)}?` : ''), ...(sug ? ['Continue', 'Always switch automatically'] : ['Add other models']))
+    .then((a) => {
+      if (a === 'Add other models') return addProvider();
+      if (a && sug) continueOnModel(s, sug, a === 'Always switch automatically');
+    });
+}
+async function continueOnModel(s, model, always) {
+  if (!model || s.busy) return;
+  if (always) await cfg().update('fallbackModel', model, vscode.ConfigurationTarget.Global);
+  await cfg().update('model', model, vscode.ConfigurationTarget.Global); // next messages use it too
+  s.upsert({ key: 'limit-' + s.id, resolved: modelDisplay(model) });
+  const last = s.lastPrompt || { text: 'Continue where you left off.', context: [] };
+  runAgent(s, last.text, last.context, { auto: true, fallback: true, model, note: `Continuing with ${modelDisplay(model)}` });
+}
+// Heads-up at 90% of the 5-hour window: ask once per window whether to switch automatically.
+function maybeWarnLimit() {
+  const lim = sessionLimit();
+  if (!lim || lim.percent < 90 || cfg().get('fallbackModel') || isProviderModel(cfg().get('model'))) return;
+  const windowKey = lim.resetsAt || new Date().toISOString().slice(0, 13);
+  if (ctx.globalState.get('nebula.limitWarned') === windowKey) return;
+  ctx.globalState.update('nebula.limitWarned', windowKey);
+  const sug = suggestedFallback();
+  if (!sug) return;
+  vscode.window.showInformationMessage(`You've used ${Math.round(lim.percent)}% of Claude's 5-hour limit. When it runs out, switch to ${modelDisplay(sug)} automatically?`, 'Yes, switch automatically', 'Choose another model', 'Not now')
+    .then(async (a) => {
+      if (a === 'Yes, switch automatically') { await cfg().update('fallbackModel', sug, vscode.ConfigurationTarget.Global); vscode.window.showInformationMessage(`OK — if Claude runs out, Nebula continues with ${modelDisplay(sug)}.`); }
+      if (a === 'Choose another model') openSettings();
+    });
+}
+const modelDisplay = (v) => (isProviderModel(v) ? `${splitModel(v).model} — ${providerList().find((p) => p.id === splitModel(v).provider)?.name || splitModel(v).provider}` : v);
 
 /* ============================== Projects folder ============================== */
 function projectsDir() {
@@ -270,6 +441,7 @@ function usagePayload() {
 }
 function pushUsage() {
   usagePanel?.webview.postMessage(usagePayload());
+  try { maybeWarnLimit(); } catch {}
   if (usageItem) {
     const lim = planUsage?.limits || [];
     const main = lim.find((l) => /session|five_hour/.test(l.key)) || lim[0];
@@ -389,6 +561,8 @@ function statePayload() {
     workspace: workspaceRoot() ? path.basename(workspaceRoot()) : null,
     engine: engine.active.version,
     projects: workspaceRoot() ? [] : listProjects(),
+    providers: providerList(),
+    queue: (s.queue || []).map((q) => ({ id: q.id, text: q.text, labels: (q.context || []).map((c) => c.label) })),
     projectsDir: projectsDir(),
     usage: { context: s.context, tokens: s.usage, plan: (planUsage?.limits || []).find((l) => /session|five_hour/.test(l.key)) || null },
   };
@@ -434,7 +608,16 @@ async function onWebviewMessage(m, webview) {
   const s = m.sessionId ? sessions.get(m.sessionId) : active();
   switch (m.type) {
     case 'ready': pushState(); break;
-    case 'send': if (s) runAgent(s, m.text, m.context || []); break;
+    case 'send':
+      if (!s) break;
+      if (s.busy) { (s.queue = s.queue || []).push({ id: uid(), text: m.text, context: m.context || [] }); pushQueue(s); }
+      else runAgent(s, m.text, m.context || []);
+      break;
+    case 'unqueue': if (s?.queue) { s.queue = s.queue.filter((q) => q.id !== m.id); pushQueue(s); } break;
+    case 'sendNow': if (s?.queue) { const i = s.queue.findIndex((q) => q.id === m.id); if (i > 0) s.queue.unshift(s.queue.splice(i, 1)[0]); pushQueue(s); stopAgent(s); } break;
+    case 'refreshModels': detectOllama(); break;
+    case 'addProvider': addProvider(); break;
+    case 'limitChoice': if (s) continueOnModel(s, m.model, !!m.always); break;
     case 'startBackground': { const ns = new Session(); sessions.set(ns.id, ns); persist(); runAgent(ns, m.text, []); pushState(); break; }
     case 'stop': stopAgent(s); break;
     case 'permission': resolvePermission(s, m.key, m.decision); break;
@@ -443,7 +626,7 @@ async function onWebviewMessage(m, webview) {
     case 'deleteSession': deleteSession(m.id); break;
     case 'setting':
       await cfg().update(m.key, m.value, vscode.ConfigurationTarget.Global);
-      if (m.key === 'model') for (const x of sessions.values()) x.q?.setModel(m.value).catch(() => {});
+      if (m.key === 'model' && !isProviderModel(m.value)) for (const x of sessions.values()) x.q?.setModel(m.value).catch(() => {});
       pushState(); break;
     case 'signIn': signIn(); break;
     case 'apiKey': setApiKey(); break;
@@ -493,7 +676,8 @@ function openManager() {
 /* ============================== Agent runs ============================== */
 async function runAgent(s, text, context, opts = {}) {
   if (s.busy || (!text.trim() && !context.some((c) => c.image))) return;
-  if (!auth.ok) { await refreshAuth(); if (!auth.ok) { vscode.window.showWarningMessage('Sign in to Claude to use the agent.', 'Sign in').then((a) => a && signIn()); return; } }
+  const modelValue = opts.model || cfg().get('model');
+  if (!isProviderModel(modelValue) && !auth.ok) { await refreshAuth(); if (!auth.ok) { vscode.window.showWarningMessage('Sign in to Claude to use the agent.', 'Sign in').then((a) => a && signIn()); return; } }
   const { query } = await loadSdk();
   if (s.title === 'New conversation') s.title = (text.trim().split('\n')[0] || 'Image').slice(0, 60);
   // No folder open: give the chat its own project folder in the projects folder (like Antigravity's playground).
@@ -510,15 +694,16 @@ async function runAgent(s, text, context, opts = {}) {
   for (const c of context) if (c.text) parts.push(c.text);
   parts.push(text);
   const images = context.filter((c) => c.image);
+  if (!opts.auto) s.lastPrompt = { text, context }; // kept so a run can be continued on another model
   if (opts.auto) s.upsert({ key: uid(), kind: 'note', text: opts.note || text });
   else s.upsert({ key: uid(), kind: 'user', text, chips: context.filter((c) => !c.thumb).map((c) => c.label), images: context.filter((c) => c.thumb).map((c) => c.thumb) });
 
-  s.busy = true; s.abort = new AbortController(); s.stderr = '';
+  s.busy = true; s.abort = new AbortController(); s.stderr = ''; s.limitHit = false;
   broadcast({ type: 'busy', sessionId: s.id, busy: true });
   const mode = cfg().get('conversationMode');
   const options = {
     cwd: s.cwd,
-    model: cfg().get('model'),
+    model: modelValue,
     effort: cfg().get('effort'),
     permissionMode: 'default', // every edit/command goes through canUseTool, which applies the review policies
     includePartialMessages: true,
@@ -534,6 +719,11 @@ async function runAgent(s, text, context, opts = {}) {
   if (s.sdkSessionId) options.resume = s.sdkSessionId;
   if (cfg().get('browserAgent')) options.mcpServers = { browser: process.platform === 'win32' ? { type: 'stdio', command: 'cmd', args: ['/c', 'npx', '-y', '@playwright/mcp@latest'] } : { type: 'stdio', command: 'npx', args: ['-y', '@playwright/mcp@latest'] } };
 
+  let runOptions = options;
+  if (isProviderModel(modelValue)) {
+    try { runOptions = await providerOptions(modelValue, options); }
+    catch (e) { s.upsert({ key: uid(), kind: 'error', text: String(e.message || e) }); s.busy = false; s.abort = null; broadcast({ type: 'busy', sessionId: s.id, busy: false }); return; }
+  }
   const promptText = parts.join('\n\n');
   // Images need the structured (streaming) prompt form; plain text keeps the simple string form.
   const makePrompt = () => !images.length ? promptText : (async function* () {
@@ -555,7 +745,8 @@ async function runAgent(s, text, context, opts = {}) {
     return false;
   };
   try {
-    if (await once(options, false)) { const o = { ...options }; delete o.resume; s.sdkSessionId = null; await once(o, true); }
+    if (process.env.NEBULA_SIMULATE_LIMIT === '1' && !isProviderModel(modelValue)) { s.limitHit = true; s.upsert({ key: uid(), kind: 'error', text: 'Simulated: Claude usage limit reached (NEBULA_SIMULATE_LIMIT)' }); } // test switch, no API call
+    else if (await once(runOptions, false)) { const o = { ...runOptions }; delete o.resume; s.sdkSessionId = null; await once(o, true); }
   } catch (err) {
     const tail = (s.stderr || '').trim().split('\n').slice(-6).join('\n');
     s.upsert({ key: uid(), kind: 'error', text: String(err?.message || err) + (tail ? '\n\n' + tail : '') });
@@ -583,6 +774,15 @@ async function runAgent(s, text, context, opts = {}) {
     persist(); pushState(); pushUsage();
     fetchContext(s);
     if (!planUsage || Date.now() - planUsage.fetched > 60000) fetchPlanUsage();
+    // Claude's usage limit ran out: continue on the fallback model, if one is set.
+    const fallback = cfg().get('fallbackModel');
+    if (s.limitHit && !isProviderModel(modelValue) && !opts.fallback) {
+      s.limitHit = false;
+      if (fallback) { setTimeout(() => runAgent(s, text, context, { auto: true, fallback: true, model: fallback, note: `Claude's usage limit was reached — continuing with ${modelDisplay(fallback)}` }), 400); return; }
+      offerModelSwitch(s);
+    }
+    // Messages typed while the agent was working go next.
+    if (s.queue?.length) { const next = s.queue.shift(); pushQueue(s); setTimeout(() => runAgent(s, next.text, next.context), 300); return; }
     if (s.id !== activeId || !panelView?.visible) vscode.window.showInformationMessage(`Agent finished: ${s.title}`, 'Open').then((a) => { if (a) { activeId = s.id; pushState(); vscode.commands.executeCommand('nebula.agentView.focus'); } });
   }
 }
@@ -605,7 +805,7 @@ function handleMessage(s, m, blocks) {
     }
     return;
   }
-  if (m.type === 'rate_limit_event') { onRateLimitEvent(m.rate_limit_info); return; }
+  if (m.type === 'rate_limit_event') { if (m.rate_limit_info?.status === 'rejected') s.limitHit = true; onRateLimitEvent(m.rate_limit_info); return; }
   if (m.type === 'assistant' && !m.parent_tool_use_id) {
     for (const b of m.message?.content || []) {
       if (b.type === 'tool_use') s.upsert({ key: b.id, kind: 'tool', name: b.name, input: b.input, status: 'running' });
@@ -619,12 +819,14 @@ function handleMessage(s, m, blocks) {
   } else if (m.type === 'result') {
     recordResult(s, m);
     let err = null;
+    if (m.is_error && /usage limit|rate.?limit|limit (reached|exceeded)|out of credits|credit balance|429/i.test(String(m.result || ''))) s.limitHit = true;
     if (m.is_error) err = (m.result || m.subtype) + ((s.stderr || '').trim() ? '\n\n' + s.stderr.trim().split('\n').slice(-6).join('\n') : '');
     else if (m.result && !s.items.some((x) => x.kind === 'text' && x.text)) s.upsert({ key: uid(), kind: 'text', text: m.result }); // e.g. local slash-command output
     s.upsert({ key: uid(), kind: 'result', ok: !m.is_error, secs: (m.duration_ms || 0) / 1000, turns: m.num_turns, cost: m.total_cost_usd, error: err });
   }
 }
 
+function pushQueue(s) { broadcast({ type: 'queue', sessionId: s.id, queue: (s.queue || []).map((q) => ({ id: q.id, text: q.text, labels: (q.context || []).map((c) => c.label) })) }); }
 function stopAgent(s) { if (!s?.busy) return; s.q?.interrupt().catch(() => s.abort?.abort()); }
 
 /* Review policies (like Antigravity): file edits follow 'Review Policy', terminal commands follow 'Auto Execution'.
@@ -980,6 +1182,13 @@ function settingsState() {
     type: 'settingsState', auth, engine: engine.active.version, projectsDir: projectsDir(), shortcuts: SHORTCUTS,
     themes: [...themes].sort((a, b) => a.localeCompare(b)), iconThemes: icons,
     currentTheme: wb.get('colorTheme'), currentIconTheme: String(wb.get('iconTheme')),
+    models: {
+      ollama: { up: ollama.up, count: ollama.models.length, enabled: cfg().get('ollamaEnabled') !== false },
+      providers: configuredProviders().map((p) => ({ id: p.id, name: p.name, count: (p.models || []).length })),
+      fallbackOptions: providerList().flatMap((p) => p.models.map((m) => [m.value, `${m.name} — ${p.name}`])),
+      fallback: cfg().get('fallbackModel') || '',
+      contextLength: cfg().get('localContextLength') || 16384,
+    },
     settings: {
       autoFixLints: cfg().get('autoFixLints') !== false, autoExecution: policy('autoExecution'), reviewPolicy: policy('reviewPolicy'),
       conversationMode: cfg().get('conversationMode'), browserAgent: !!cfg().get('browserAgent'), newChatCreatesProject: cfg().get('newChatCreatesProject') !== false,
@@ -1005,7 +1214,7 @@ function openSettings() {
     if (m.type === 'theme') { await vscode.workspace.getConfiguration('workbench').update(m.kind === 'icon' ? 'iconTheme' : 'colorTheme', m.value === 'null' ? null : m.value, vscode.ConfigurationTarget.Global); pushSettings(); }
     if (m.type === 'action') {
       const run = {
-        customizations: () => customizations(), changeProjectsFolder, browseThemes: () => vscode.commands.executeCommand('workbench.action.selectTheme'),
+        customizations: () => customizations(), changeProjectsFolder, addProvider, removeProvider: () => removeProvider(m.id), refreshModels: detectOllama, browseThemes: () => vscode.commands.executeCommand('workbench.action.selectTheme'),
         signIn, signOut, apiKey: setApiKey, updateEngine: () => checkEngineUpdate(true), importFrom: importFromEditor,
         advanced: () => vscode.commands.executeCommand('workbench.action.openSettings', '@ext:nebula.nebula-agent'),
         keybindings: () => vscode.commands.executeCommand('workbench.action.openGlobalKeybindings', 'nebula.'),
@@ -1123,6 +1332,9 @@ function activate(context) {
   context.subscriptions.push({ dispose: () => clearInterval(usageTimer) });
   applyFirstRunSettings().then(applyProjectsDefault).then(applyIconDefault);
   refreshAuth().then((ok) => { pushUsage(); if (ok) { syncCapabilities(); fetchPlanUsage(); } });
+  detectOllama();
+  const ollamaTimer = setInterval(detectOllama, 2 * 60 * 1000);
+  context.subscriptions.push({ dispose: () => { clearInterval(ollamaTimer); proxy?.stop(); } });
 
   // Like Antigravity: the Agent panel is always open on the right at startup.
   setTimeout(async () => {

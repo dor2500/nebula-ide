@@ -2,7 +2,7 @@
   "name": "nebula-agent",
   "displayName": "Nebula Agent",
   "description": "Claude-powered agent for Nebula IDE: agent panel, Agent Manager, change review and Antigravity import.",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "publisher": "nebula",
   "license": "MIT",
   "engines": {
@@ -313,7 +313,7 @@
         "nebula.model": {
           "type": "string",
           "default": "opus",
-          "description": "Model used by the agent. The list in the agent panel comes live from Claude, so new models appear automatically."
+          "description": "Model used by the agent: a Claude model, or \"<provider>::<model>\" for other providers."
         },
         "nebula.conversationMode": {
           "type": "string",
@@ -387,6 +387,35 @@
           "type": "boolean",
           "default": true,
           "description": "With no folder open, a new chat gets its own folder in the projects folder."
+        },
+        "nebula.providers": {
+          "type": "array",
+          "default": [],
+          "description": "Other model providers (added from Settings → Models). API keys are stored separately in secure storage.",
+          "items": {
+            "type": "object"
+          }
+        },
+        "nebula.fallbackModel": {
+          "type": "string",
+          "default": "",
+          "description": "When your Claude plan limit is reached, continue on this model (\"<provider>::<model>\"). Empty = ask."
+        },
+        "nebula.ollamaEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show local Ollama models in the model menu when Ollama is running."
+        },
+        "nebula.localContextLength": {
+          "type": "number",
+          "default": 16384,
+          "enum": [
+            8192,
+            16384,
+            32768,
+            65536
+          ],
+          "description": "Context size for local models."
         }
       }
     },

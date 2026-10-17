@@ -28,6 +28,15 @@
         ${row('Browser Control', 'Let the agent open and drive a real browser (Playwright) to test web apps. Needs Node.js.', select('browserAgent', ONOFF, s.browserAgent))}
         ${row('Customizations', 'Rules and MCP servers.', link('customizations', 'Manage'))}
       </section>
+      <section><h3>Models</h3>
+        ${row('Claude', 'Your Claude account or API key — the default.', `<span class="muted small">${st.auth.ok ? 'Connected' : 'Not signed in'}</span>`)}
+        ${row(`Local models (Ollama)`, 'Free models running on this computer. Install Ollama and pull a model (for example qwen2.5-coder) and they appear in the model menu.',
+          st.models.ollama.up ? `<span class="muted small">${st.models.ollama.count} model${st.models.ollama.count === 1 ? '' : 's'}</span>&nbsp;&nbsp;${select('ollamaEnabled', ONOFF, st.models.ollama.enabled)}` : `<span class="muted small">Not running</span>&nbsp;&nbsp;${link('refreshModels', 'Check again')}`)}
+        ${st.models.ollama.up ? row('Local context size', 'How much text a local model can read at once. Bigger is smarter but needs more memory.', select('localContextLength', [[8192, '8K'], [16384, '16K'], [32768, '32K'], [65536, '64K']], st.models.contextLength)) : ''}
+        ${st.models.providers.map((p) => row(p.name, `${p.count} model${p.count === 1 ? '' : 's'} in the model menu`, `<button class="link" data-action="removeProvider" data-id="${esc(p.id)}">Remove</button>`)).join('')}
+        ${row('Add a provider', 'OpenRouter, OpenAI, Gemini, DeepSeek, Groq, Mistral, xAI, LM Studio or any OpenAI-compatible service.', link('addProvider', 'Add'))}
+        ${row('When Claude runs out', 'If your Claude plan limit is reached, continue the conversation automatically on this model.', `<select data-key="fallbackModel"><option value="&quot;&quot;">Ask me</option>${st.models.fallbackOptions.map(([v, l]) => `<option value="${esc(JSON.stringify(v))}" ${v === st.models.fallback ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`)}
+      </section>
       <section><h3>Projects</h3>
         ${row('Projects Folder', st.projectsDir, link('changeProjectsFolder', 'Change'))}
         <div class="path muted">${esc(st.projectsDir)}</div>
@@ -54,7 +63,7 @@
       <div class="tabs"><button class="${tab === 'settings' ? 'on' : ''}" data-tab="settings">Settings</button><button class="${tab === 'shortcuts' ? 'on' : ''}" data-tab="shortcuts">AI Shortcuts</button></div></div>`;
     app.querySelectorAll('select[data-key]').forEach((el) => (el.onchange = () => post({ type: 'set', key: el.dataset.key, value: JSON.parse(el.value) })));
     app.querySelectorAll('select[data-theme]').forEach((el) => (el.onchange = () => post({ type: 'theme', kind: el.dataset.theme, value: el.value })));
-    app.querySelectorAll('[data-action]').forEach((el) => (el.onclick = () => post({ type: 'action', action: el.dataset.action })));
+    app.querySelectorAll('[data-action]').forEach((el) => (el.onclick = () => post({ type: 'action', action: el.dataset.action, id: el.dataset.id })));
     app.querySelectorAll('[data-tab]').forEach((el) => (el.onclick = () => { tab = el.dataset.tab; vscode.setState({ tab }); render(); }));
   }
   window.addEventListener('message', (e) => { if (e.data.type === 'settingsState') { st = e.data; render(); } });

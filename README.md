@@ -46,6 +46,7 @@ Antigravity, VS Code, Cursor or Windsurf.
 - **Change review**: every edit is snapshotted; review as a diff, accept or reject per file or all at once.
 - **Browser**: built-in browser (`Nebula: Open Browser`) and optional browser control for the agent (Playwright).
 - **Generate commit message** from the Source Control view (✨ button).
+- **Queued messages**: keep typing while the agent works — messages wait in line and go out when it finishes (or *Send now*).
 - Planning / Fast conversation modes; rules (`CLAUDE.md`) and MCP servers under Customizations.
 
 **Projects**
@@ -57,6 +58,12 @@ Antigravity, VS Code, Cursor or Windsurf.
 - Sign in with your Claude account (official Claude Code login) or an Anthropic API key.
 - The model list and `/` actions come live from the Claude engine; the engine updates itself every hour, so new models and features arrive without reinstalling.
 - **Usage**: status-bar meter for your plan's 5-hour limit, a context-window ring in the composer, and a Usage page with plan limits, reset times, conversation context and a 14-day token history.
+
+**Other models (when Claude runs out)**
+- **Local models** via Ollama are detected automatically and run free on your computer.
+- Add **OpenRouter, OpenAI, Gemini, DeepSeek, Groq, Mistral, xAI, LM Studio** or any OpenAI-compatible service in Settings → Models; their models appear in the model menu.
+- When your Claude limit is reached, Nebula asks which model to continue with (or switches automatically if you choose), and warns you at 90% of the 5-hour limit.
+- Other models run through a built-in translation layer, so the same agent, tools and change review work with them. Small local models are fine for simple tasks; for real work use a strong cloud model.
 
 **Look and feel**
 - Antigravity-style layout: agent panel on the right, "Code with Agent" start screen, colored file icons.

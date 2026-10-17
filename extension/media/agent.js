@@ -38,8 +38,12 @@
 
   /* ================= helpers ================= */
   const models = () => (st?.caps?.models?.length ? st.caps.models : FALLBACK_MODELS);
-  const modelOf = (v) => models().find((m) => m.value === v) || models()[0];
+  // Models from other providers (Ollama, OpenRouter, …): value "<provider>::<model>".
+  const providerModels = () => (st?.providers || []).flatMap((p) => p.models.map((m) => ({ ...m, provider: p.name, local: p.local, efforts: [] })));
+  const allModels = () => [...models(), ...providerModels()];
+  const modelOf = (v) => allModels().find((m) => m.value === v) || (String(v).includes('::') ? { value: v, name: String(v).split('::')[1], provider: String(v).split('::')[0], efforts: [] } : models()[0]);
   function modelLabel(m) {
+    if (m.provider) return m.name;
     let name = m.name;
     if (/^default/i.test(name)) { const twin = models().find((x) => x !== m && x.resolved && x.resolved === m.resolved); name = twin ? twin.name : 'Default'; }
     return name.startsWith('Claude') ? name : 'Claude ' + name;
@@ -141,6 +145,20 @@
         if (it.error) d.appendChild(h('div', 'errbox', esc(it.error)));
         return d;
       }
+      case 'limit': {
+        const d = h('div', 'limitcard' + (it.resolved ? ' resolved' : ''));
+        const reset = it.resetsAt ? new Date(it.resetsAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : null;
+        if (it.resolved) { d.innerHTML = `<span class="muted small">Claude's limit was reached — switched to ${esc(it.resolved)}</span>`; return d; }
+        d.innerHTML = `<div class="lc-title">Claude's usage limit was reached</div>` +
+          `<div class="muted small">${reset ? `It resets at ${esc(reset)}. ` : ''}${it.options.length ? 'Continue now with another model:' : 'Add another model to keep working until then.'}</div>` +
+          (it.options.length
+            ? `<div class="lc-row"><select class="lc-model">${it.options.map((o) => `<option value="${esc(o.value)}" ${o.value === it.suggested ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}</select><button class="mini accept lc-go">Continue</button></div>` +
+              `<label class="lc-always"><input type="checkbox" class="lc-auto"> Always switch automatically when Claude runs out</label>`
+            : `<div class="lc-row"><button class="mini accept lc-add">Add other models…</button></div>`);
+        $('.lc-go', d) && ($('.lc-go', d).onclick = () => post({ type: 'limitChoice', sessionId: st.session.id, model: $('.lc-model', d).value, always: $('.lc-auto', d).checked }));
+        $('.lc-add', d) && ($('.lc-add', d).onclick = () => post({ type: 'addProvider' }));
+        return d;
+      }
       case 'error': return h('div', 'errbox', esc(it.text));
       case 'note': { const d = h('div', 'note', `${I.folder}<span>${esc(it.text)}</span>`); return d; }
     }
@@ -165,6 +183,7 @@
         <div class="hero"></div>
         <div class="composer-wrap">
           <div id="pop" class="pop hidden"></div>
+          <div id="queue"></div>
           <div class="composer">
             <div id="chips"></div>
             <textarea id="input" rows="1" placeholder="Ask anything, @ to mention, / for actions"></textarea>
@@ -188,7 +207,7 @@
     $('#apikey') && ($('#apikey').onclick = () => post({ type: 'apiKey' }));
     $('#ctx').onclick = (e) => { e.stopPropagation(); togglePop('context'); };
     $('#modelBtn').onclick = (e) => { e.stopPropagation(); togglePop('model'); };
-    $('#go').onclick = () => (st.session.busy ? post({ type: 'stop' }) : send());
+
     $('#ring').onclick = () => post({ type: 'openUsage' });
     const input = $('#input');
     input.value = saved.draft || '';
@@ -196,7 +215,7 @@
     input.onkeydown = onKey;
     input.onclick = autocomplete;
     wireMedia();
-    grow(); renderChips(); updateModelBtn(); updateGo(); updateRing();
+    grow(); renderChips(); updateModelBtn(); updateGo(); updateRing(); renderQueue();
   }
   function updateRing() {
     const r = $('#ring'); if (!r) return;
@@ -214,14 +233,26 @@
   function updateGo() {
     const g = $('#go'); if (!g) return;
     const busy = st.session.busy, has = !!($('#input')?.value.trim() || chips.length);
-    g.className = 'sendbtn' + (busy ? ' busy' : has ? ' ready' : '');
-    g.innerHTML = busy ? I.stop : I.arrow;
-    g.title = busy ? 'Stop' : 'Send';
+    // While the agent works: with text typed, the button queues the message; empty, it stops the agent.
+    const stop = busy && !has;
+    g.className = 'sendbtn' + (stop ? ' busy' : has ? ' ready' : '');
+    g.innerHTML = stop ? I.stop : I.arrow;
+    g.title = stop ? 'Stop' : busy ? 'Queue message (sent when the agent finishes)' : 'Send';
+    g.onclick = () => (stop ? post({ type: 'stop' }) : send());
+  }
+  function renderQueue() {
+    const el = $('#queue'); if (!el) return;
+    const q = st.session.queue || [];
+    el.innerHTML = q.map((x, i) => `<div class="qitem" data-id="${esc(x.id)}"><span class="qtag">${i === 0 ? 'Next' : 'Queued'}</span><span class="qt">${esc(x.text || x.labels.join(' '))}</span><button class="mini" data-now title="Stop the agent and send this now">Send now</button><button class="icon" data-x title="Remove">${I.trash}</button></div>`).join('');
+    $$('.qitem', el).forEach((r) => {
+      $('[data-now]', r).onclick = () => post({ type: 'sendNow', sessionId: st.session.id, id: r.dataset.id });
+      $('[data-x]', r).onclick = () => post({ type: 'unqueue', sessionId: st.session.id, id: r.dataset.id });
+    });
   }
   function updateModelBtn() {
     const b = $('#modelBtn'); if (!b) return;
     const m = modelOf(st.settings.model), e = effortOf(m);
-    b.innerHTML = `<span>${esc(modelLabel(m))}</span>${e ? `<span class="muted">${EFFORT[e]}</span>` : ''}${I.down}`;
+    b.innerHTML = `<span>${esc(modelLabel(m))}</span>${m.provider ? `<span class="muted">${esc(m.local ? 'Local' : m.provider)}</span>` : e ? `<span class="muted">${EFFORT[e]}</span>` : ''}${I.down}`;
   }
   function renderChips() {
     const el = $('#chips'); if (!el) return;
@@ -297,7 +328,7 @@
   function send() {
     const input = $('#input');
     const text = input.value.trim();
-    if ((!text && !chips.length) || st.session.busy) return;
+    if (!text && !chips.length) return;
     closePop();
     post({ type: 'send', sessionId: st.session.id, text, context: chips });
     input.value = ''; saved.draft = ''; vscode.setState(saved);
@@ -312,7 +343,7 @@
     const p = $('#pop'); if (!p) return;
     pop = { kind, sel: 0, query };
     p.className = 'pop k-' + kind;
-    if (kind === 'model') return renderModelPop(p);
+    if (kind === 'model') { post({ type: 'refreshModels' }); return renderModelPop(p); }
     if (kind === 'context') {
       p.innerHTML = `<div class="pop-h">Add Context</div>` +
         [['media', I.media, 'Media'], ['mentions', I.at, 'Mentions'], ['actions', I.action, 'Actions']].map(([k, ic, l]) => `<div class="row" data-k="${k}">${ic}<span>${l}</span></div>`).join('');
@@ -327,18 +358,23 @@
     renderListPop(p);
   }
   function renderModelPop(p) {
-    const all = models();
-    const primary = all.filter((m) => !/^claude-/.test(m.value) && (m.value !== 'default' || st.settings.model === 'default'));
-    const other = all.filter((m) => /^claude-/.test(m.value));
+    const all = allModels();
+    const claude = models();
+    const primary = claude.filter((m) => !/^claude-/.test(m.value) && (m.value !== 'default' || st.settings.model === 'default'));
+    const other = claude.filter((m) => /^claude-/.test(m.value));
+    const sections = (st.providers || []).map((pv) => `<div class="pop-h">${esc(pv.name)}</div>` + pv.models.map((m) => `<div class="row mrow ${m.value === st.settings.model ? 'cur' : ''}" data-v="${esc(m.value)}"><span>${esc(m.name)}</span>${m.note ? `<span class="muted">${esc(m.note)}</span>` : ''}</div>`).join('')).join('');
     const row = (m) => {
       const e = effortOf(m);
       const isNew = st.caps?.newModels?.includes(m.value);
       return `<div class="row mrow ${m.value === st.settings.model ? 'cur' : ''}" data-v="${esc(m.value)}" title="${esc(m.description || '')}"><span>${esc(modelLabel(m))}</span>${e && m.value === st.settings.model ? `<span class="muted">${EFFORT[e]}</span>` : ''}${isNew ? '<span class="badge">New</span>' : ''}<span class="grow"></span>${m.efforts?.length ? `<span class="sub">${I.chev}</span>` : ''}</div>`;
     };
     p.innerHTML = `<div class="pop-h">Model</div>${primary.map(row).join('')}` +
-      (other.length ? `<div class="row more" id="moreModels"><span class="muted">More models</span><span class="grow"></span><span class="sub">${I.chev}</span></div><div class="others hidden">${other.map(row).join('')}</div>` : '') +
+      (other.length ? `<div class="row more" id="moreModels"><span class="muted">More Claude models</span><span class="grow"></span><span class="sub">${I.chev}</span></div><div class="others hidden">${other.map(row).join('')}</div>` : '') +
+      sections +
+      `<div class="row more" id="addProv"><span class="muted">${I.plus} Add other models…</span></div>` +
       `<div class="submenu hidden"></div>`;
     $('#moreModels', p) && ($('#moreModels', p).onclick = (e) => { e.stopPropagation(); $('.others', p).classList.toggle('hidden'); });
+    $('#addProv', p).onclick = () => { closePop(); post({ type: 'addProvider' }); };
     const sub = $('.submenu', p);
     $$('.mrow', p).forEach((r) => {
       const m = all.find((x) => x.value === r.dataset.v);
@@ -452,7 +488,7 @@
         const list = $('#list'); const stick = nearBottom(list);
         $('#app').className = st.session.items.length ? '' : 'empty';
         renderHero();
-        updateModelBtn(); updateGo(); updateRing();
+        updateModelBtn(); updateGo(); updateRing(); renderQueue();
         if (pop?.kind === 'model') renderModelPop($('#pop'));
         if (stick) list.scrollTop = list.scrollHeight;
       } else renderPanel();
@@ -482,6 +518,8 @@
       setTimeout(() => (files = null), 30000);
     } else if (m.type === 'media') {
       (async () => { for (const it of m.items) { if (it.image) await addImage(`data:${it.image.mediaType};base64,${it.image.data}`, it.label); else if (!chips.some((c) => c.label === it.label)) chips.push(it); } renderChips(); updateGo(); $('#input')?.focus(); })();
+    } else if (m.type === 'queue') {
+      if (st && m.sessionId === st.session.id) { st.session.queue = m.queue; renderQueue(); }
     } else if (m.type === 'openModelMenu') {
       openPop('model');
     }
