@@ -89,7 +89,7 @@ Get-ChildItem "$stage\bin" -File | Where-Object { $_.Extension -eq '' } | Remove
 $ico = Join-Path $here 'build\nebula.ico'
 if (Test-Path $rcedit) {
   & $rcedit "$stage\Nebula.exe" --set-icon $ico --set-version-string ProductName 'Nebula IDE' --set-version-string FileDescription 'Nebula IDE' `
-    --set-version-string CompanyName 'Nebula' --set-version-string OriginalFilename 'Nebula.exe' --set-version-string InternalName 'Nebula'
+    --set-file-version $version --set-product-version $version --set-version-string LegalCopyright 'MIT License' --set-version-string CompanyName 'Nebula IDE contributors' --set-version-string OriginalFilename 'Nebula.exe' --set-version-string InternalName 'Nebula'
 }
 Copy-Item $ico "$stage\resources\app\resources\win32\code.ico" -Force
 
@@ -125,6 +125,6 @@ if ($SkipInstaller) { return }
 # ---- installer ----
 $out = Join-Path $here 'dist'
 New-Item -ItemType Directory -Force $out | Out-Null
-& $makensis /V2 "/DSRC=$stage" "/DOUT=$out\Nebula-IDE-Setup-$version.exe" "/DVERSION=$version" "/DICON=$ico" (Join-Path $here 'installer.nsi')
+& $makensis /V2 "/DSRC=$stage" "/DOUT=$out\Nebula-IDE-Setup-$version.exe" "/DVERSION=$version" "/DICON=$ico" "/DLICENSE=$(Join-Path $here 'LICENSE')" (Join-Path $here 'installer.nsi')
 if ($LASTEXITCODE) { throw "makensis failed ($LASTEXITCODE)" }
 Write-Host "Installer: $out\Nebula-IDE-Setup-$version.exe"

@@ -184,6 +184,11 @@
         "title": "Open Agent Memory",
         "category": "Nebula",
         "icon": "$(note)"
+      },
+      {
+        "command": "nebula.checkForUpdates",
+        "title": "Check for Updates",
+        "category": "Nebula"
       }
     ],
     "menus": {
@@ -450,6 +455,11 @@
             "Reopen the last conversation"
           ],
           "description": "What the agent panel shows when Nebula opens."
+        },
+        "nebula.checkForUpdates": {
+          "type": "boolean",
+          "default": true,
+          "description": "Check GitHub once a day for a new version of Nebula IDE."
         }
       }
     },

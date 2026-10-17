@@ -251,6 +251,63 @@ function maybeWarnLimit() {
 }
 const modelDisplay = (v) => (isProviderModel(v) ? `${splitModel(v).model} — ${providerList().find((p) => p.id === splitModel(v).provider)?.name || splitModel(v).provider}` : v);
 
+/* ============================== Nebula self-update ============================== */
+// Checks GitHub releases once a day; installs the new version (with the usual Windows admin prompt) and reopens Nebula.
+const RELEASES_API = 'https://api.github.com/repos/dor2500/nebula-ide/releases/latest';
+const nebulaVersion = () => ctx.extension.packageJSON.version;
+function cmpSemver(a, b) { const x = String(a).replace(/^v/, '').split('.').map(Number), y = String(b).replace(/^v/, '').split('.').map(Number); for (let i = 0; i < 3; i++) { if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) - (y[i] || 0); } return 0; }
+function download(url, dest, onProgress, redirects = 5) {
+  return new Promise((resolve, reject) => {
+    require('https').get(url, { headers: { 'user-agent': 'nebula-ide' } }, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && redirects) { res.resume(); return resolve(download(res.headers.location, dest, onProgress, redirects - 1)); }
+      if (res.statusCode !== 200) { res.resume(); return reject(new Error(`HTTP ${res.statusCode}`)); }
+      const total = +res.headers['content-length'] || 0; let got = 0;
+      const hash = require('crypto').createHash('sha256'); const out = fs.createWriteStream(dest);
+      res.on('data', (c) => { got += c.length; hash.update(c); onProgress?.(total ? got / total : 0); });
+      res.pipe(out); out.on('finish', () => resolve(hash.digest('hex'))); res.on('error', reject); out.on('error', reject);
+    }).on('error', reject);
+  });
+}
+async function checkForNebulaUpdate(interactive = false) {
+  if (process.platform !== 'win32') return;
+  try {
+    const rel = await getJson(RELEASES_API, { 'user-agent': 'nebula-ide' });
+    const latest = String(rel.tag_name || '').replace(/^v/, '');
+    ctx.globalState.update('nebula.lastUpdateCheck', Date.now());
+    if (!latest || cmpSemver(latest, nebulaVersion()) <= 0) {
+      if (interactive) vscode.window.showInformationMessage(`Nebula IDE is up to date (${nebulaVersion()}).`);
+      return;
+    }
+    if (!interactive && ctx.globalState.get('nebula.skipVersion') === latest) return;
+    const a = await vscode.window.showInformationMessage(`Nebula IDE ${latest} is available (you have ${nebulaVersion()}).`, 'Update now', "What's new", 'Later');
+    if (a === "What's new") { vscode.env.openExternal(vscode.Uri.parse(rel.html_url)); return; }
+    if (a === 'Later') { ctx.globalState.update('nebula.skipVersion', latest); return; }
+    if (a === 'Update now') await installNebulaUpdate(rel);
+  } catch (e) { log('Update check failed: ' + (e?.message || e)); if (interactive) vscode.window.showWarningMessage('Could not check for updates: ' + (e?.message || e)); }
+}
+async function installNebulaUpdate(rel) {
+  const asset = (rel.assets || []).find((a) => /Setup.*\.exe$/i.test(a.name));
+  const sumAsset = (rel.assets || []).find((a) => asset && a.name === asset.name + '.sha256');
+  if (!asset) return vscode.window.showWarningMessage('This release has no installer.');
+  if (anyBusy()) { const go = await vscode.window.showWarningMessage('An agent is still working. Updating closes Nebula.', { modal: true }, 'Update anyway'); if (go !== 'Update anyway') return; }
+  const dest = path.join(os.tmpdir(), asset.name);
+  const digest = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Downloading Nebula IDE ${rel.tag_name}…` }, async (p) => {
+    let last = 0;
+    return download(asset.browser_download_url, dest, (f) => { const pct = Math.floor(f * 100); if (pct > last) { p.report({ increment: pct - last }); last = pct; } });
+  });
+  if (sumAsset) {
+    const expected = (await new Promise((resolve, reject) => { const tmp = dest + '.sha256'; download(sumAsset.browser_download_url, tmp).then(() => resolve(fs.readFileSync(tmp, 'utf8').trim().split(/\s+/)[0].toLowerCase()), reject); }));
+    if (expected !== digest) { fs.rmSync(dest, { force: true }); return vscode.window.showErrorMessage('The downloaded update failed its checksum and was deleted. Nothing was installed.'); }
+  }
+  persist();
+  // A detached PowerShell runs the installer (Windows asks for admin approval), then reopens Nebula as the normal user.
+  const exe = path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Nebula IDE', 'Nebula.exe');
+  const q = (s) => `'${String(s).replace(/'/g, "''")}'`;
+  const script = `$p = Start-Process -FilePath ${q(dest)} -ArgumentList '/S' -Verb RunAs -Wait -PassThru; if ($p.ExitCode -eq 0) { Remove-Item ${q(dest)} -Force -ErrorAction SilentlyContinue; Start-Process ${q(exe)} }`;
+  require('child_process').spawn('powershell.exe', ['-NoProfile', '-WindowStyle', 'Hidden', '-Command', script], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+  vscode.window.showInformationMessage('Installing the update — approve the Windows prompt. Nebula will reopen when it’s done.');
+}
+
 /* ============================== Memory ============================== */
 // Persistent memory the agent reads at the start of every conversation and updates itself:
 //   ~/.nebula/memory/global.md              — facts and preferences for all projects
@@ -1271,7 +1328,7 @@ function settingsState() {
   }
   const wb = vscode.workspace.getConfiguration('workbench');
   return {
-    type: 'settingsState', auth, engine: engine.active.version, projectsDir: projectsDir(), shortcuts: SHORTCUTS,
+    type: 'settingsState', auth, engine: engine.active.version, nebulaVersion: nebulaVersion(), projectsDir: projectsDir(), shortcuts: SHORTCUTS,
     themes: [...themes].sort((a, b) => a.localeCompare(b)), iconThemes: icons,
     currentTheme: wb.get('colorTheme'), currentIconTheme: String(wb.get('iconTheme')),
     models: {
@@ -1308,7 +1365,7 @@ function openSettings() {
     if (m.type === 'action') {
       const run = {
         customizations: () => customizations(), changeProjectsFolder, openProjectMemory: () => openMemory('project'), openGlobalMemory: () => openMemory('global'), addProvider, removeProvider: () => removeProvider(m.id), refreshModels: detectOllama, browseThemes: () => vscode.commands.executeCommand('workbench.action.selectTheme'),
-        signIn, signOut, apiKey: setApiKey, updateEngine: () => checkEngineUpdate(true), importFrom: importFromEditor,
+        signIn, signOut, apiKey: setApiKey, updateEngine: () => checkEngineUpdate(true), importFrom: importFromEditor, checkNebula: () => checkForNebulaUpdate(true),
         advanced: () => vscode.commands.executeCommand('workbench.action.openSettings', '@ext:nebula.nebula-agent'),
         keybindings: () => vscode.commands.executeCommand('workbench.action.openGlobalKeybindings', 'nebula.'),
       }[m.action];
@@ -1392,6 +1449,7 @@ function activate(context) {
     vscode.commands.registerCommand('nebula.closeAgent', () => vscode.commands.executeCommand('workbench.action.closeAuxiliaryBar')),
     vscode.commands.registerCommand('nebula.openAgentManager', openManager),
     vscode.commands.registerCommand('nebula.openUsage', openUsage),
+    vscode.commands.registerCommand('nebula.checkForUpdates', () => checkForNebulaUpdate(true)),
     vscode.commands.registerCommand('nebula.openMemory', () => openMemory('project')),
     vscode.commands.registerCommand('nebula.newProject', newProject),
     vscode.commands.registerCommand('nebula.openSettings', openSettings),
@@ -1435,6 +1493,9 @@ function activate(context) {
     await vscode.commands.executeCommand('workbench.view.extension.nebula-agent');
     vscode.commands.executeCommand('workbench.action.focusActiveEditorGroup');
   }, 600);
+
+  // Nebula itself: check GitHub releases once a day.
+  if (cfg().get('checkForUpdates') !== false && Date.now() - ctx.globalState.get('nebula.lastUpdateCheck', 0) > 20 * 3600 * 1000) setTimeout(() => checkForNebulaUpdate(false), 60 * 1000);
 
   // Keep the Claude engine current: check shortly after startup, then every hour.
   setTimeout(() => checkEngineUpdate(false), 45 * 1000);

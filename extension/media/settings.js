@@ -57,6 +57,7 @@
       <section><h3>Account</h3>
         ${row(st.auth.ok ? st.auth.label : 'Not signed in', '', st.auth.ok ? link('signOut', 'Sign out') : link('signIn', 'Sign in'))}
         ${row('Anthropic API key', 'Optional — overrides the account sign-in.', link('apiKey', 'Set'))}
+        ${row(`Nebula IDE ${st.nebulaVersion}`, 'Checks GitHub for a new version once a day.', link('checkNebula', 'Check for updates'))}
         ${row(`Claude engine ${st.engine}`, 'Updates itself every hour.', link('updateEngine', 'Check now'))}
         ${row('Import from another editor', 'Antigravity, VS Code, Cursor, Windsurf', link('importFrom', 'Import'))}
       </section>

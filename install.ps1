@@ -1,6 +1,7 @@
 # Nebula IDE one-line installer:
 #   irm https://raw.githubusercontent.com/dor2500/nebula-ide/main/install.ps1 | iex
-# Downloads the latest release, verifies its SHA-256, installs per-user (no admin) and launches Nebula IDE.
+# Downloads the latest release, verifies its SHA-256, installs to Program Files (Windows asks for admin approval)
+# and launches Nebula IDE.
 & {
   $ErrorActionPreference = 'Stop'
   $ProgressPreference = 'SilentlyContinue'   # Invoke-WebRequest is much faster without the progress bar
@@ -27,12 +28,12 @@
     Write-Host '  Checksum verified.'
   }
 
-  Write-Host '  Installing...'
-  $p = Start-Process -FilePath $out -ArgumentList '/S' -Wait -PassThru
+  Write-Host '  Installing... (approve the Windows admin prompt)'
+  $p = Start-Process -FilePath $out -ArgumentList '/S' -Verb RunAs -Wait -PassThru
   Remove-Item $out -Force -ErrorAction SilentlyContinue
   if ($p.ExitCode -ne 0) { throw "Installer exited with code $($p.ExitCode)." }
 
-  $exe = Join-Path $env:LOCALAPPDATA 'Programs\Nebula IDE\Nebula.exe'
+  $exe = Join-Path $env:ProgramFiles 'Nebula IDE\Nebula.exe'
   Write-Host "  Installed to $(Split-Path $exe)" -ForegroundColor Green
   Write-Host '  Starting Nebula IDE...'
   Start-Process $exe

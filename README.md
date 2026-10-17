@@ -13,14 +13,15 @@ build of VS Code) with Claude as the agent.
 irm https://raw.githubusercontent.com/dor2500/nebula-ide/main/install.ps1 | iex
 ```
 
-It downloads the latest release, verifies its SHA-256 checksum, installs for the current user
-(no admin rights) and starts Nebula IDE. Run the same line again to update.
+It downloads the latest release, verifies its SHA-256 checksum, installs to `C:\Program Files\Nebula IDE`
+(Windows asks for admin approval) and starts Nebula IDE. Nebula also checks for new versions itself and updates with one click.
 
 **Or download the installer** from the [latest release](https://github.com/dor2500/nebula-ide/releases/latest)
 and run `Nebula-IDE-Setup-<version>.exe`. Silent install: `Nebula-IDE-Setup-<version>.exe /S`.
 
-The installer adds Start menu and desktop shortcuts, "Open with Nebula IDE" in Explorer, and an
-entry in Apps & features for uninstalling. On first launch, sign in with your Claude account
+The installer is a regular setup wizard: it installs for all users in Program Files, adds Start menu and
+desktop shortcuts and "Open with Nebula IDE" in Explorer (optional), and registers in Apps & features /
+Programs and Features with an uninstaller. On first launch, sign in with your Claude account
 (Pro / Max) or an Anthropic API key, and optionally import your extensions and settings from
 Antigravity, VS Code, Cursor or Windsurf.
 
