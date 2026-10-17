@@ -2,7 +2,7 @@
   "name": "nebula-agent",
   "displayName": "Nebula Agent",
   "description": "Claude-powered agent for Nebula IDE: agent panel, Agent Manager, change review and Antigravity import.",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "publisher": "nebula",
   "license": "MIT",
   "engines": {
@@ -460,6 +460,16 @@
           "type": "boolean",
           "default": true,
           "description": "Check GitHub once a day for a new version of Nebula IDE."
+        },
+        "nebula.autopilot": {
+          "type": "boolean",
+          "default": false,
+          "description": "Never ask for approval: the agent edits files and runs commands on its own (catastrophic commands still ask)."
+        },
+        "nebula.keepGoingRounds": {
+          "type": "number",
+          "default": 10,
+          "description": "Maximum rounds for Keep going."
         }
       }
     },

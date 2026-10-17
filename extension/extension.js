@@ -182,6 +182,11 @@ async function removeProvider(id) {
   if (String(cfg().get('model')).startsWith(id + '::')) await cfg().update('model', 'opus', vscode.ConfigurationTarget.Global);
   pushState(); pushSettings();
 }
+function loopPrompt(loop) {
+  return `Keep going on this goal: ${loop.goal}
+
+This is round ${loop.round} of up to ${loop.max}. Look at the current state of the project, pick the next most valuable improvement toward the goal, implement it, and verify it works (run the tests or build if there are any). Don't redo what's already done and don't ask questions — decide sensibly and continue. Finish with a one-line summary of this round. When nothing meaningful is left to improve, reply with [[DONE]] on its own line instead.`;
+}
 const LITE_PROMPT = `You are a coding agent inside Nebula IDE, working in the current project folder.
 Use the provided tools to read files, change files and run commands — call them, don't describe them.
 Work step by step, check your work, and keep replies short. When you change files, end with a one-line summary.`;
@@ -193,6 +198,8 @@ async function providerOptions(modelValue, base, s) {
   proxy = proxy || new ModelProxy(resolveProvider, log);
   await proxy.start();
   const env = { ...base.env, ANTHROPIC_BASE_URL: proxy.url(provider), ANTHROPIC_AUTH_TOKEN: 'nebula', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', DISABLE_TELEMETRY: '1',
+    // nothing goes to Anthropic in a non-Claude run (verified: no connections) — not even the claude.ai connector list
+    ENABLE_CLAUDEAI_MCP_SERVERS: 'false', DISABLE_ERROR_REPORTING: '1',
     ANTHROPIC_MODEL: model, ANTHROPIC_DEFAULT_OPUS_MODEL: model, ANTHROPIC_DEFAULT_SONNET_MODEL: model, ANTHROPIC_DEFAULT_HAIKU_MODEL: model, CLAUDE_CODE_SUBAGENT_MODEL: model };
   delete env.ANTHROPIC_API_KEY;
   const o = { ...base, env, model, strictMcpConfig: true, mcpServers: base.mcpServers || {} };
@@ -535,6 +542,9 @@ function onRateLimitEvent(info) {
 }
 function recordResult(s, m) {
   const u = m.usage || {};
+  // Other providers bill (or don't, for local models) on their side: the engine's dollar estimate uses Claude prices, so drop it.
+  const onProvider = isProviderModel(s.runModel);
+  if (onProvider) m = { ...m, total_cost_usd: 0, modelUsage: { [modelDisplay(s.runModel)]: { inputTokens: u.input_tokens || 0, outputTokens: u.output_tokens || 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUSD: 0 } } };
   const add = (t) => {
     t.input += u.input_tokens || 0; t.output += u.output_tokens || 0;
     t.cacheRead += u.cache_read_input_tokens || 0; t.cacheWrite += u.cache_creation_input_tokens || 0;
@@ -559,7 +569,9 @@ async function fetchContext(s) {
     const { query } = await loadSdk();
     const abort = new AbortController();
     async function* idle() { await new Promise((r) => abort.signal.addEventListener('abort', r)); }
-    const q = query({ prompt: idle(), options: { pathToClaudeCodeExecutable: claudeExe(), abortController: abort, env: await agentEnv(), cwd: s.cwd || os.homedir(), resume: s.sdkSessionId, model: cfg().get('model'), settingSources: ['user', 'project', 'local'] } });
+    let opts = { pathToClaudeCodeExecutable: claudeExe(), abortController: abort, env: await agentEnv(), cwd: s.cwd || os.homedir(), resume: s.sdkSessionId, model: s.runModel || cfg().get('model'), settingSources: ['user', 'project', 'local'] };
+    if (isProviderModel(opts.model)) opts = { ...(await providerOptions(opts.model, opts, s)), abortController: abort, resume: s.sdkSessionId }; // stay on the chosen model's provider
+    const q = query({ prompt: idle(), options: opts });
     const c = await Promise.race([q.getContextUsage({ detail: 'summary' }), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 20000))]);
     abort.abort();
     s.context = { total: c.totalTokens, max: c.maxTokens, percent: Math.round(c.percentage), model: c.model, categories: (c.categories || []).filter((x) => x.kind === 'used' && x.tokens > 0).map((x) => ({ name: x.name, tokens: x.tokens })) };
@@ -691,8 +703,8 @@ function statePayload() {
   const s = active();
   return {
     type: 'state', auth, caps,
-    settings: { model: cfg().get('model'), mode: cfg().get('conversationMode'), policy: cfg().get('reviewPolicy'), effort: cfg().get('effort') },
-    session: { id: s.id, title: s.title, busy: s.busy, items: s.items, changes: [...s.changes.keys()].map((p) => relPath(p, s.cwd)) },
+    settings: { autopilot: !!cfg().get('autopilot'), model: cfg().get('model'), mode: cfg().get('conversationMode'), policy: cfg().get('reviewPolicy'), effort: cfg().get('effort') },
+    session: { id: s.id, title: s.title, busy: s.busy, keepGoing: !!s.keepGoing, loop: s.loop ? { round: s.loop.round, max: s.loop.max } : null, items: s.items, changes: [...s.changes.keys()].map((p) => relPath(p, s.cwd)) },
     sessions: [...sessions.values()].filter((x) => !x.summary().empty || x.busy).sort((a, b) => b.updated - a.updated).map((x) => x.summary()),
     workspace: workspaceRoot() ? path.basename(workspaceRoot()) : null,
     engine: engine.active.version,
@@ -756,8 +768,12 @@ async function onWebviewMessage(m, webview) {
         persist(); break;
       }
       if (s.busy) { (s.queue = s.queue || []).push({ id: uid(), text: m.text, context: m.context || [] }); pushQueue(s); }
-      else runAgent(s, m.text, m.context || []);
+      else {
+        if (s.keepGoing) s.loop = { goal: m.text, round: 1, max: Math.max(1, cfg().get('keepGoingRounds') || 10) };
+        runAgent(s, m.text, m.context || []);
+      }
       break;
+    case 'setKeepGoing': if (s) { s.keepGoing = !!m.on; if (!m.on) s.loop = null; pushState(); } break;
     case 'unqueue': if (s?.queue) { s.queue = s.queue.filter((q) => q.id !== m.id); pushQueue(s); } break;
     case 'sendNow': if (s?.queue) { const i = s.queue.findIndex((q) => q.id === m.id); if (i > 0) s.queue.unshift(s.queue.splice(i, 1)[0]); pushQueue(s); stopAgent(s); } break;
     case 'refreshModels': detectOllama(); break;
@@ -841,7 +857,8 @@ async function runAgent(s, text, context, opts = {}) {
   for (const c of context) if (c.text) parts.push(c.text);
   parts.push(text);
   const images = context.filter((c) => c.image);
-  if (!opts.auto) s.lastPrompt = { text, context }; // kept so a run can be continued on another model
+  if (!opts.auto) { s.lastPrompt = { text, context }; s.userStopped = false; } // lastPrompt: to continue on another model
+  s.runModel = modelValue;
   if (opts.auto) s.upsert({ key: uid(), kind: 'note', text: opts.note || text });
   else s.upsert({ key: uid(), kind: 'user', text, chips: context.filter((c) => !c.thumb).map((c) => c.label), images: context.filter((c) => c.thumb).map((c) => c.thumb) });
 
@@ -931,6 +948,20 @@ async function runAgent(s, text, context, opts = {}) {
     }
     // Messages typed while the agent was working go next.
     if (s.queue?.length) { const next = s.queue.shift(); pushQueue(s); setTimeout(() => runAgent(s, next.text, next.context), 300); return; }
+    // Keep going: start the next improvement round until the agent says it's done, the round limit, or Stop.
+    if (s.loop && !s.userStopped) {
+      const lastText = [...s.items].reverse().find((i) => i.kind === 'text')?.text || '';
+      const failed = s.items.slice(-2).some((x) => x.kind === 'error' || (x.kind === 'result' && !x.ok));
+      if (failed || /\[\[DONE\]\]/.test(lastText) || s.loop.round >= s.loop.max) {
+        s.upsert({ key: uid(), kind: 'note', text: failed ? 'Keep going stopped because of an error.' : /\[\[DONE\]\]/.test(lastText) ? `Keep going finished after ${s.loop.round} round${s.loop.round > 1 ? 's' : ''} — nothing meaningful left to improve.` : `Keep going reached its limit of ${s.loop.max} rounds.` });
+        s.loop = null; pushState();
+      } else {
+        s.loop.round++;
+        const r = s.loop.round, max = s.loop.max;
+        setTimeout(() => runAgent(s, loopPrompt(s.loop), [], { auto: true, note: `Keep going · round ${r} of ${max}` }), 600);
+        return;
+      }
+    }
     if (s.id !== activeId || !panelView?.visible) vscode.window.showInformationMessage(`Agent finished: ${s.title}`, 'Open').then((a) => { if (a) { activeId = s.id; pushState(); vscode.commands.executeCommand('nebula.agentView.focus'); } });
   }
 }
@@ -975,7 +1006,8 @@ function handleMessage(s, m, blocks) {
 }
 
 function pushQueue(s) { broadcast({ type: 'queue', sessionId: s.id, queue: (s.queue || []).map((q) => ({ id: q.id, text: q.text, labels: (q.context || []).map((c) => c.label) })) }); }
-function stopAgent(s) { if (!s?.busy) return; s.q?.interrupt().catch(() => s.abort?.abort()); }
+function stopAgent(s) {
+  if (s) { s.loop = null; s.userStopped = true; } if (!s?.busy) return; s.q?.interrupt().catch(() => s.abort?.abort()); }
 
 /* Review policies (like Antigravity): file edits follow 'Review Policy', terminal commands follow 'Auto Execution'.
    Each is alwaysProceed | agentDecides | requestReview. */
@@ -989,7 +1021,11 @@ function isSafeCommand(cmd = '') {
   if (RISKY_CMD.test(cmd)) return false;
   return cmd.split(/&&|\|\||;|\|/).map((x) => x.trim()).filter(Boolean).every((x) => SAFE_CMD.test(x));
 }
+// Even on Autopilot, a few catastrophic commands still ask (like Antigravity's terminal deny list).
+const CATASTROPHIC_CMD = /\brm\s+-[a-z]*(rf|fr)[a-z]*\s+(\/|~|\$HOME|\*|[a-z]:[\\/]?)(\s|$)|Remove-Item\b[^|;&]*-Recurse[^|;&]*\s(['"]?)([a-z]:\\?|~|\\|\$env:(USERPROFILE|SystemRoot|windir))\4(\s|$)|\bformat(\.com)?\s+[a-z]:|\bdiskpart\b|\bmkfs(\.\w+)?\b|\bdd\s+if=|\bgit\s+push\b[^|;&]*\s(--force\b|-f\b)|\bgit\s+push\s+--mirror\b|\b(shutdown|Restart-Computer|Stop-Computer)\b|\breg(\.exe)?\s+delete\s+HK(LM|CR|EY_LOCAL_MACHINE)|\bcipher\s+\/w|\bbcdedit\b/i;
+const isCatastrophic = (cmd = '') => CATASTROPHIC_CMD.test(cmd);
 function autoDecision(toolName, input) {
+  if (cfg().get('autopilot')) return CMD_TOOLS.test(toolName) && isCatastrophic(input?.command) ? 'ask' : 'allow';
   if (EDIT_TOOLS.test(toolName)) return isMemoryPath(input?.file_path) || policy('reviewPolicy') !== 'requestReview' ? 'allow' : 'ask';
   if (CMD_TOOLS.test(toolName)) { const p = policy('autoExecution'); return p === 'alwaysProceed' ? 'allow' : p === 'requestReview' ? 'ask' : isSafeCommand(input?.command) ? 'allow' : 'ask'; }
   return 'allow';
@@ -1296,7 +1332,14 @@ async function generateCommitMessage(arg) {
       let out = '';
       const q = query({
         prompt: `Write a git commit message for this diff. First line: imperative summary under 72 characters. Then, only if useful, a blank line and a few short bullet points. Output only the message.\n\n${diff.slice(0, 60000)}`,
-        options: { pathToClaudeCodeExecutable: claudeExe(), env: await agentEnv(), cwd: repo.rootUri.fsPath, model: 'haiku', tools: [], maxTurns: 1, settingSources: [], systemPrompt: 'You write concise, accurate git commit messages.' },
+        options: await (async () => {
+          // Use the model chosen in the agent panel: Claude Haiku when it's a Claude model, otherwise that provider's model.
+          const chosen = cfg().get('model');
+          const base = { pathToClaudeCodeExecutable: claudeExe(), env: await agentEnv(), cwd: repo.rootUri.fsPath, model: 'haiku', tools: [], maxTurns: 1, settingSources: [], systemPrompt: 'You write concise, accurate git commit messages.' };
+          if (!isProviderModel(chosen)) return base;
+          const o = await providerOptions(chosen, { ...base, model: chosen });
+          return { ...o, tools: [], settingSources: [], systemPrompt: base.systemPrompt };
+        })(),
       });
       for await (const m of q) if (m.type === 'result' && !m.is_error) out = m.result || '';
       out = out.trim().replace(/^```\w*\n?|```$/g, '').trim();
@@ -1339,7 +1382,8 @@ function settingsState() {
       contextLength: cfg().get('localContextLength') || 16384,
     },
     settings: {
-      autoFixLints: cfg().get('autoFixLints') !== false,
+      autoFixLints: cfg().get('autoFixLints') !== false, autopilot: !!cfg().get('autopilot'), keepGoingRounds: cfg().get('keepGoingRounds') || 10,
+      trustPrompt: vscode.workspace.getConfiguration('security.workspace.trust').get('enabled') !== false,
       memoryEnabled: cfg().get('memoryEnabled') !== false, memoryRecentConversations: cfg().get('memoryRecentConversations') !== false, startupView: cfg().get('startupView') || 'recent', autoExecution: policy('autoExecution'), reviewPolicy: policy('reviewPolicy'),
       conversationMode: cfg().get('conversationMode'), browserAgent: !!cfg().get('browserAgent'), newChatCreatesProject: cfg().get('newChatCreatesProject') !== false,
     },
@@ -1360,7 +1404,11 @@ function openSettings() {
   settingsPanel.webview.html = webviewHtml(settingsPanel.webview, 'settings');
   settingsPanel.webview.onDidReceiveMessage(async (m) => {
     if (m.type === 'ready') pushSettings();
-    if (m.type === 'set') { await cfg().update(m.key, m.value, vscode.ConfigurationTarget.Global); pushSettings(); pushState(); }
+    if (m.type === 'set') {
+      if (m.key === 'trustPrompt') await vscode.workspace.getConfiguration('security.workspace.trust').update('enabled', !!m.value, vscode.ConfigurationTarget.Global);
+      else await cfg().update(m.key, m.value, vscode.ConfigurationTarget.Global);
+      pushSettings(); pushState();
+    }
     if (m.type === 'theme') { await vscode.workspace.getConfiguration('workbench').update(m.kind === 'icon' ? 'iconTheme' : 'colorTheme', m.value === 'null' ? null : m.value, vscode.ConfigurationTarget.Global); pushSettings(); }
     if (m.type === 'action') {
       const run = {
@@ -1413,6 +1461,13 @@ async function applyFirstRunSettings() {
   await set('update', 'mode', 'none');
   await set('telemetry', 'telemetryLevel', 'off');
   ctx.globalState.update('nebula.defaultsApplied', true);
+}
+// No "Restricted Mode" prompt for every folder you open (the user turned it off; it can be re-enabled in Settings).
+async function applyTrustDefault() {
+  if (ctx.globalState.get('nebula.trustDefaultApplied')) return;
+  const c = vscode.workspace.getConfiguration('security.workspace.trust');
+  if (c.inspect('enabled')?.globalValue === undefined) await c.update('enabled', false, vscode.ConfigurationTarget.Global);
+  ctx.globalState.update('nebula.trustDefaultApplied', true);
 }
 // Colored file icons by default, like Antigravity (only if the user hasn't picked an icon theme).
 async function applyIconDefault() {
@@ -1482,7 +1537,7 @@ function activate(context) {
   planUsage = context.globalState.get('nebula.planUsage', null);
   const usageTimer = setInterval(fetchPlanUsage, 10 * 60 * 1000);
   context.subscriptions.push({ dispose: () => clearInterval(usageTimer) });
-  applyFirstRunSettings().then(applyProjectsDefault).then(applyIconDefault);
+  applyFirstRunSettings().then(applyProjectsDefault).then(applyIconDefault).then(applyTrustDefault);
   refreshAuth().then((ok) => { pushUsage(); if (ok) { syncCapabilities(); fetchPlanUsage(); } });
   detectOllama();
   const ollamaTimer = setInterval(detectOllama, 2 * 60 * 1000);

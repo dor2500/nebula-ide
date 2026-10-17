@@ -21,6 +21,8 @@
     action: '<svg viewBox="0 0 16 16"><rect x="2.5" y="2.5" width="11" height="11" rx="1.5"/><path d="m6 10 4-4"/></svg>',
     file: '<svg viewBox="0 0 16 16"><path d="M9 2H4.5v12h7V4.5z"/><path d="M9 2v2.5h2.5"/></svg>',
     folder: '<svg viewBox="0 0 16 16"><path d="M2 4.5h4l1.5 1.5H14v6.5H2z"/></svg>',
+    bolt: '<svg viewBox="0 0 16 16"><path d="M9 1.5 3.5 9H8l-1 5.5L12.5 7H8z"/></svg>',
+    loop: '<svg viewBox="0 0 16 16"><path d="M4.5 10.5A3 3 0 1 1 7 6l2 2.5a3 3 0 1 0 2.5-1.5"/><path d="M4.5 10.5c1.3 0 2-1 2.5-1.6M9 8.5"/></svg>',
     trash: '<svg viewBox="0 0 16 16"><path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.7 8.5h5.6l.7-8.5"/></svg>',
   };
   const EFFORT = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'X-High', max: 'Max' };
@@ -191,6 +193,8 @@
             <div class="bar">
               <button class="round" id="ctx" title="Add Context">${I.plus}</button>
               <button class="model" id="modelBtn" title="Select Model (Ctrl+/)"></button>
+              <button class="tog" id="autoBtn"></button>
+              <button class="tog" id="loopBtn"></button>
               <span class="grow"></span>
               <button class="ring" id="ring"></button>
               <button id="go" class="sendbtn"></button>
@@ -216,7 +220,20 @@
     input.onkeydown = onKey;
     input.onclick = autocomplete;
     wireMedia();
-    grow(); renderChips(); updateModelBtn(); updateGo(); updateRing(); renderQueue();
+    $('#autoBtn').onclick = () => post({ type: 'setting', key: 'autopilot', value: !st.settings.autopilot });
+    $('#loopBtn').onclick = () => post({ type: 'setKeepGoing', sessionId: st.session.id, on: !st.session.keepGoing });
+    grow(); renderChips(); updateModelBtn(); updateGo(); updateRing(); renderQueue(); updateToggles();
+  }
+  function updateToggles() {
+    const a = $('#autoBtn'), l = $('#loopBtn'); if (!a || !l) return;
+    const on = !!st.settings.autopilot;
+    a.className = 'tog' + (on ? ' on' : '');
+    a.innerHTML = I.bolt + '<span>Auto</span>';
+    a.title = on ? 'Autopilot is on: the agent edits and runs commands without asking (catastrophic commands still ask). Click to turn off.' : 'Autopilot: let the agent work without asking for approval';
+    const lp = st.session.loop;
+    l.className = 'tog' + (st.session.keepGoing ? ' on' : '');
+    l.innerHTML = I.loop + (lp && st.session.busy ? `<span>${lp.round}/${lp.max}</span>` : '');
+    l.title = st.session.keepGoing ? 'Keep going is on: after each round the agent picks the next improvement and continues until nothing is left (or Stop). Click to turn off.' : 'Keep going: keep improving toward your goal, round after round';
   }
   function updateRing() {
     const r = $('#ring'); if (!r) return;
@@ -502,7 +519,7 @@
         const list = $('#list'); const stick = nearBottom(list);
         $('#app').className = st.session.items.length ? '' : 'empty';
         renderHero();
-        updateModelBtn(); updateGo(); updateRing(); renderQueue();
+        updateModelBtn(); updateGo(); updateRing(); renderQueue(); updateToggles();
         if (pop?.kind === 'model') renderModelPop($('#pop'));
         if (stick) list.scrollTop = list.scrollHeight;
       } else renderPanel();
@@ -522,7 +539,7 @@
       if (!st) return;
       const sm = st.sessions.find((x) => x.id === m.sessionId); if (sm) sm.busy = m.busy;
       if (MODE === 'manager') return renderManager();
-      if (m.sessionId === st.session.id) { st.session.busy = m.busy; updateGo(); }
+      if (m.sessionId === st.session.id) { st.session.busy = m.busy; updateGo(); updateToggles(); }
     } else if (m.type === 'focus') {
       if (m.context && !chips.some((c) => c.label === m.context.label)) { chips.push(m.context); renderChips(); updateGo(); }
       $('#input')?.focus();

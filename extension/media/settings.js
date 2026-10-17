@@ -21,6 +21,8 @@
     const app = $('#app');
     const settings = `
       <section><h3>Agent</h3>
+        ${row('Autopilot', 'Never ask for approval: the agent edits files and runs commands on its own. A few catastrophic commands (deleting a whole drive, format, git push --force, shutdown) still ask.', select('autopilot', ONOFF, s.autopilot))}
+        ${row('Keep Going Rounds', 'With Keep going on, the agent keeps improving toward your goal for up to this many rounds (or until nothing is left).', select('keepGoingRounds', [[3, '3'], [5, '5'], [10, '10'], [20, '20'], [50, '50']], s.keepGoingRounds))}
         ${row('Agent Auto-Fix Lints', 'After the agent changes files, it automatically fixes errors the language servers report in them.', select('autoFixLints', ONOFF, s.autoFixLints))}
         ${row('Auto Execution', 'Terminal commands. Agent Decides runs safe read-only commands (tests, git status, builds) and asks before anything that deletes, installs, pushes or downloads.', select('autoExecution', POLICY, s.autoExecution))}
         ${row('Review Policy', 'File edits. Always Proceed and Agent Decides apply edits right away (you can still review and reject them); Request Review asks before each edit.', select('reviewPolicy', POLICY, s.reviewPolicy))}
@@ -46,6 +48,7 @@
       </section>
       <section><h3>Projects</h3>
         ${row('Projects Folder', st.projectsDir, link('changeProjectsFolder', 'Change'))}
+        ${row('Folder Trust Prompt', 'Ask whether you trust a folder (Restricted Mode) when opening it.', select('trustPrompt', ONOFF, s.trustPrompt))}
         <div class="path muted">${esc(st.projectsDir)}</div>
         ${row('New Chat Creates Project', 'With no folder open, a new chat gets its own folder in the projects folder.', select('newChatCreatesProject', ONOFF, s.newChatCreatesProject))}
       </section>

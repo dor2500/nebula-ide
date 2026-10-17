@@ -47,6 +47,8 @@ Antigravity, VS Code, Cursor or Windsurf.
 - **Change review**: every edit is snapshotted; review as a diff, accept or reject per file or all at once.
 - **Browser**: built-in browser (`Nebula: Open Browser`) and optional browser control for the agent (Playwright).
 - **Generate commit message** from the Source Control view (✨ button).
+- **Autopilot** (⚡ in the input box): the agent edits files and runs commands without asking. A short deny list (deleting a whole drive, `format`, `git push --force`, shutdown…) still asks.
+- **Keep going** (∞ in the input box): give a goal and the agent keeps improving round after round — picks the next improvement, implements and verifies it — until nothing meaningful is left, the round limit (Settings), or you press Stop.
 - **Queued messages**: keep typing while the agent works — messages wait in line and go out when it finishes (or *Send now*).
 - Planning / Fast conversation modes; rules (`CLAUDE.md`) and MCP servers under Customizations.
 
@@ -70,7 +72,7 @@ Antigravity, VS Code, Cursor or Windsurf.
 - **Local models** via Ollama are detected automatically and run free on your computer.
 - Add **OpenRouter, OpenAI, Gemini, DeepSeek, Groq, Mistral, xAI, LM Studio** or any OpenAI-compatible service in Settings → Models; their models appear in the model menu.
 - When your Claude limit is reached, Nebula asks which model to continue with (or switches automatically if you choose), and warns you at 90% of the 5-hour limit.
-- Other models run through a built-in translation layer, so the same agent, tools and change review work with them. Small local models are fine for simple tasks; for real work use a strong cloud model.
+- Other models run through a built-in translation layer, so the same agent, tools and change review work with them. A conversation on another model sends nothing to Anthropic (verified: no network connections), so it only uses that provider's tokens; usage is tracked per model without Claude prices. Small local models are fine for simple tasks; for real work use a strong cloud model.
 
 **Look and feel**
 - Antigravity-style layout: agent panel on the right, "Code with Agent" start screen, colored file icons.

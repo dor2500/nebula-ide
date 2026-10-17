@@ -310,3 +310,9 @@ body.settings { background: var(--vscode-editor-background); }
 .rtt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
 .ra { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; line-height: 1.45; }
 #app.empty .hero { max-height: 62vh; }
+
+/* ---------- Autopilot / Keep going toggles ---------- */
+.tog { display: inline-flex; align-items: center; gap: 3px; height: 26px; padding: 0 7px; border-radius: 7px; color: var(--muted); font-size: 11.5px; flex: none; }
+.tog svg { width: 13px; height: 13px; }
+.tog:hover { background: var(--surface-2); color: var(--fg); }
+.tog.on { color: var(--vscode-button-foreground); background: color-mix(in srgb, var(--vscode-button-background) 85%, transparent); }
