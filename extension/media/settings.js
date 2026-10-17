@@ -21,6 +21,8 @@
     const app = $('#app');
     const settings = `
       <section><h3>Agent</h3>
+        ${row('Token Saver', 'Best results with fewer tokens: only the coding tools (about 21k fewer tokens per request), leaner memory, efficient reading, and subagents on Sonnet.', select('tokenSaver', ONOFF, s.tokenSaver))}
+        ${row('Effort', 'How hard the model thinks. Auto: low for quick questions, medium for regular tasks, high for complex work.', select('effort', [['auto', 'Auto'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['xhigh', 'X-High'], ['max', 'Max']], s.effort))}
         ${row('Autopilot', 'Never ask for approval: the agent edits files and runs commands on its own. A few catastrophic commands (deleting a whole drive, format, git push --force, shutdown) still ask.', select('autopilot', ONOFF, s.autopilot))}
         ${row('Keep Going Rounds', 'With Keep going on, the agent keeps improving toward your goal for up to this many rounds (or until nothing is left).', select('keepGoingRounds', [[3, '3'], [5, '5'], [10, '10'], [20, '20'], [50, '50']], s.keepGoingRounds))}
         ${row('Agent Auto-Fix Lints', 'After the agent changes files, it automatically fixes errors the language servers report in them.', select('autoFixLints', ONOFF, s.autoFixLints))}

@@ -2,7 +2,7 @@
   "name": "nebula-agent",
   "displayName": "Nebula Agent",
   "description": "Claude-powered agent for Nebula IDE: agent panel, Agent Manager, change review and Antigravity import.",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "publisher": "nebula",
   "license": "MIT",
   "engines": {
@@ -360,14 +360,16 @@
         },
         "nebula.effort": {
           "type": "string",
-          "default": "high",
+          "default": "auto",
           "enum": [
+            "auto",
             "low",
             "medium",
             "high",
             "xhigh",
             "max"
-          ]
+          ],
+          "description": "How hard the model thinks. Auto picks low/medium/high from the task."
         },
         "nebula.projectsFolder": {
           "type": "string",
@@ -470,6 +472,11 @@
           "type": "number",
           "default": 10,
           "description": "Maximum rounds for Keep going."
+        },
+        "nebula.tokenSaver": {
+          "type": "boolean",
+          "default": true,
+          "description": "Best results with fewer tokens: coding tools only, leaner memory, efficient reading, subagents on Sonnet."
         }
       }
     },

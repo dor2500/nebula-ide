@@ -23,6 +23,30 @@ const anyBusy = () => [...sessions.values()].some((s) => s.busy);
 
 const SYSTEM_APPEND = `You are the agent inside Nebula IDE, a VS Code based editor. The user watches your work in a side panel and reviews file changes as diffs afterwards.
 Keep chat replies concise and use Markdown. When you change files, finish with a short summary of what changed and why.`;
+// Token Saver (default on): the engine ships ~40 tools and a skills list that cost ~21k tokens on every request
+// (measured: 39.1k -> 17.9k before the first word). Nebula only needs the coding tools.
+const CORE_TOOLS = ['Read', 'Write', 'Edit', 'MultiEdit', 'Bash', 'PowerShell', 'Glob', 'Grep', 'TodoWrite', 'WebFetch', 'WebSearch', 'Task', 'NotebookEdit'];
+const tokenSaver = () => cfg().get('tokenSaver') !== false;
+function tokenSaverOptions(mode) {
+  if (!tokenSaver()) return {};
+  return { tools: mode === 'fast' ? CORE_TOOLS.filter((t) => t !== 'TodoWrite') : CORE_TOOLS };
+}
+// Effort "Auto": quick questions think less, real work thinks more — quality where it matters, fewer tokens elsewhere.
+function autoEffort(text = '', opts = {}) {
+  if (opts.auto) return opts.fallback ? 'medium' : 'low'; // auto-fix lints and similar follow-ups
+  const t = text.trim();
+  const hard = /\b(refactor|architect|design|redesign|debug|bug|crash|failing|flaky|race|performance|optimi[sz]e|security|vulnerab|migrat|rewrite|from scratch|whole (project|app|codebase)|entire|complex|algorithm|concurren)/i;
+  const build = /\b(implement|build|create|add|make|write|fix|change|update|convert|integrate|set ?up)\b/i;
+  if (t.length > 700 || hard.test(t)) return 'high';
+  if (t.length < 160 && !build.test(t) && (/\?\s*$/.test(t) || /^(what|why|how|where|which|who|when|explain|is |are |does |do |can )/i.test(t))) return 'low';
+  return 'medium';
+}
+function resolveEffort(text, opts) {
+  const e = cfg().get('effort') || 'auto';
+  if (opts.loopRound) return e === 'auto' ? 'medium' : e;
+  return e === 'auto' ? autoEffort(text, opts) : e;
+}
+const EFFICIENCY_APPEND = `Work token-efficiently without lowering quality: locate code with Grep/Glob before reading, read only the relevant parts of large files (offset/limit), don't re-read files you already have, don't paste whole files back into the chat, batch related edits, and keep explanations short.`;
 const PLANNING_APPEND = `Planning mode: for any task with more than one step, first lay out the plan as a task list with the TodoWrite tool, keep it updated as you work, then execute it.`;
 
 /* ============================== Engine & capabilities ============================== */
@@ -321,7 +345,7 @@ async function installNebulaUpdate(rel) {
 //   ~/.nebula/memory/<project>-<hash>.md    — this project's notes
 // plus short summaries of the project's recent conversations, so a new chat knows what happened before.
 const MEMORY_DIR = path.join(os.homedir(), '.nebula', 'memory');
-const MEMORY_MAX = 12000; // characters of each memory file put into the prompt
+const MEMORY_MAX = 5000; // characters of each memory file put into the prompt (kept small: it's sent with every request)
 function memoryFile(dir) {
   if (!dir) return null;
   const hash = require('crypto').createHash('sha1').update(path.resolve(dir).toLowerCase()).digest('hex').slice(0, 8);
@@ -364,10 +388,10 @@ function memoryPrompt(s, { lite = false } = {}) {
   let out = `\n\n# Memory\nYou have persistent memory across conversations. Use it: read it now, and when you learn something worth keeping — the user's preferences, decisions, how this project works, what's done and what's left — update the memory file with your file tools (keep it short and organised; rewrite outdated lines instead of piling up). Don't mention the memory file unless asked.\n`;
   if (pf) out += `\n## Project memory (${pf})\n${clip(readText(pf)).trim() || '(empty)'}\n`;
   out += `\n## Global memory (${globalMemoryFile()})\n${clip(readText(globalMemoryFile())).trim() || '(empty)'}\n`;
-  if (!s.sdkSessionId && dir && cfg().get('memoryRecentConversations') !== false) {
-    const recent = recentConversations(dir, s.id, lite ? 3 : 5);
+  if (!s.sdkSessionId && dir && cfg().get('memoryRecentConversations') !== false) { // only for a new conversation
+    const recent = recentConversations(dir, s.id, 3);
     if (recent.length) {
-      out += `\n## Recent conversations in this project (most recent first)\n` + recent.map((r) => `- "${r.title}" (${ago(r.updated)})${r.files.length ? ` — files: ${r.files.join(', ')}` : ''}${r.answer ? `\n  Outcome: ${lite ? r.answer.slice(0, 160) : r.answer}` : ''}`).join('\n') + '\n';
+      out += `\n## Recent conversations in this project (most recent first)\n` + recent.map((r) => `- "${r.title}" (${ago(r.updated)})${r.files.length ? ` — files: ${r.files.join(', ')}` : ''}${r.answer ? `\n  Outcome: ${r.answer.slice(0, 180)}` : ''}`).join('\n') + '\n';
     }
   }
   return out;
@@ -575,6 +599,8 @@ async function fetchContext(s) {
     const c = await Promise.race([q.getContextUsage({ detail: 'summary' }), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 20000))]);
     abort.abort();
     s.context = { total: c.totalTokens, max: c.maxTokens, percent: Math.round(c.percentage), model: c.model, categories: (c.categories || []).filter((x) => x.kind === 'used' && x.tokens > 0).map((x) => ({ name: x.name, tokens: x.tokens })) };
+    // Every message re-sends the whole conversation: past ~150k tokens, a fresh conversation (memory keeps the context) is much cheaper.
+    if (c.totalTokens > 150000 && !s.longHint) { s.longHint = true; s.upsert({ key: uid(), kind: 'note', text: `This conversation is long (${Math.round(c.totalTokens / 1000)}k tokens are sent with every message). To save tokens, start a new conversation with + — the agent's memory keeps what matters.` }); }
     persist(); pushState(); pushUsage();
   } catch (e) { log('Context usage failed: ' + (e?.message || e)); }
 }
@@ -868,7 +894,7 @@ async function runAgent(s, text, context, opts = {}) {
   const options = {
     cwd: s.cwd,
     model: modelValue,
-    effort: cfg().get('effort'),
+    effort: resolveEffort(text, opts),
     permissionMode: 'default', // every edit/command goes through canUseTool, which applies the review policies
     includePartialMessages: true,
     pathToClaudeCodeExecutable: claudeExe(),
@@ -878,10 +904,16 @@ async function runAgent(s, text, context, opts = {}) {
     systemPrompt: { type: 'preset', preset: 'claude_code', append: SYSTEM_APPEND + (mode === 'planning' ? '\n' + PLANNING_APPEND : '') + memoryPrompt(s) },
     additionalDirectories: [MEMORY_DIR],
     canUseTool: (toolName, input, opts) => askPermission(s, toolName, input, opts),
+    ...tokenSaverOptions(mode),
     hooks: { PreToolUse: [{ matcher: 'Edit|Write|MultiEdit|NotebookEdit', hooks: [async (inp) => { snapshot(s, inp.tool_input); return {}; }] }] },
     stderr: (d) => { s.stderr = (s.stderr + d).slice(-4000); },
   };
   if (s.sdkSessionId) options.resume = s.sdkSessionId;
+  if (tokenSaver()) {
+    options.systemPrompt.append += '\n' + EFFICIENCY_APPEND;
+    // no claude.ai connector tools in coding sessions; subagents (big searches) on Sonnet instead of Opus
+    Object.assign(options.env, { ENABLE_CLAUDEAI_MCP_SERVERS: 'false', ...(isProviderModel(modelValue) ? {} : { CLAUDE_CODE_SUBAGENT_MODEL: 'sonnet' }) });
+  }
   if (cfg().get('browserAgent')) options.mcpServers = { browser: process.platform === 'win32' ? { type: 'stdio', command: 'cmd', args: ['/c', 'npx', '-y', '@playwright/mcp@latest'] } : { type: 'stdio', command: 'npx', args: ['-y', '@playwright/mcp@latest'] } };
 
   let runOptions = options;
@@ -958,7 +990,7 @@ async function runAgent(s, text, context, opts = {}) {
       } else {
         s.loop.round++;
         const r = s.loop.round, max = s.loop.max;
-        setTimeout(() => runAgent(s, loopPrompt(s.loop), [], { auto: true, note: `Keep going · round ${r} of ${max}` }), 600);
+        setTimeout(() => runAgent(s, loopPrompt(s.loop), [], { auto: true, loopRound: r, note: `Keep going · round ${r} of ${max}` }), 600);
         return;
       }
     }
@@ -1382,7 +1414,7 @@ function settingsState() {
       contextLength: cfg().get('localContextLength') || 16384,
     },
     settings: {
-      autoFixLints: cfg().get('autoFixLints') !== false, autopilot: !!cfg().get('autopilot'), keepGoingRounds: cfg().get('keepGoingRounds') || 10,
+      autoFixLints: cfg().get('autoFixLints') !== false, tokenSaver: tokenSaver(), effort: cfg().get('effort') || 'auto', autopilot: !!cfg().get('autopilot'), keepGoingRounds: cfg().get('keepGoingRounds') || 10,
       trustPrompt: vscode.workspace.getConfiguration('security.workspace.trust').get('enabled') !== false,
       memoryEnabled: cfg().get('memoryEnabled') !== false, memoryRecentConversations: cfg().get('memoryRecentConversations') !== false, startupView: cfg().get('startupView') || 'recent', autoExecution: policy('autoExecution'), reviewPolicy: policy('reviewPolicy'),
       conversationMode: cfg().get('conversationMode'), browserAgent: !!cfg().get('browserAgent'), newChatCreatesProject: cfg().get('newChatCreatesProject') !== false,

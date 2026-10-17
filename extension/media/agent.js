@@ -25,7 +25,7 @@
     loop: '<svg viewBox="0 0 16 16"><path d="M4.5 10.5A3 3 0 1 1 7 6l2 2.5a3 3 0 1 0 2.5-1.5"/><path d="M4.5 10.5c1.3 0 2-1 2.5-1.6M9 8.5"/></svg>',
     trash: '<svg viewBox="0 0 16 16"><path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.7 8.5h5.6l.7-8.5"/></svg>',
   };
-  const EFFORT = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'X-High', max: 'Max' };
+  const EFFORT = { auto: 'Auto', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'X-High', max: 'Max' };
   const FALLBACK_MODELS = [
     { value: 'default', name: 'Default (recommended)', efforts: ['low', 'medium', 'high', 'xhigh', 'max'], resolved: 'claude-opus-5-5' },
     { value: 'opus', name: 'Opus 5.5', efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
@@ -50,7 +50,7 @@
     if (/^default/i.test(name)) { const twin = models().find((x) => x !== m && x.resolved && x.resolved === m.resolved); name = twin ? twin.name : 'Default'; }
     return name.startsWith('Claude') ? name : 'Claude ' + name;
   }
-  const effortOf = (m) => (m.efforts?.length ? (m.efforts.includes(st.settings.effort) ? st.settings.effort : m.efforts.includes('high') ? 'high' : m.efforts[0]) : null);
+  const effortOf = (m) => (m.efforts?.length ? (st.settings.effort === 'auto' || !st.settings.effort ? 'auto' : m.efforts.includes(st.settings.effort) ? st.settings.effort : m.efforts.includes('high') ? 'high' : m.efforts[0]) : null);
   const relp = (p) => { if (!p) return ''; const ws = st?.workspace; const i = ws ? p.toLowerCase().lastIndexOf(ws.toLowerCase() + '\\') : -1; return i >= 0 ? p.slice(i + ws.length + 1) : p; };
   const nearBottom = (el) => el.scrollHeight - el.scrollTop - el.clientHeight < 140;
   function ago(t) { const s = (Date.now() - t) / 1000; return s < 60 ? 'just now' : s < 3600 ? `${Math.floor(s / 60)}m ago` : s < 86400 ? `${Math.floor(s / 3600)}h ago` : `${Math.floor(s / 86400)}d ago`; }
@@ -413,7 +413,7 @@
       r.onmouseenter = () => {
         if (!m.efforts?.length) { sub.classList.add('hidden'); return; }
         const cur = m.value === st.settings.model ? effortOf(m) : null;
-        sub.innerHTML = `<div class="pop-h">Effort</div>` + m.efforts.map((e) => `<div class="row" data-e="${e}"><span>${EFFORT[e]}</span><span class="grow"></span>${e === cur ? I.check : ''}</div>`).join('');
+        sub.innerHTML = `<div class="pop-h">Effort</div>` + ['auto', ...m.efforts].map((e) => `<div class="row" data-e="${e}"><span>${EFFORT[e]}</span><span class="grow"></span>${e === cur ? I.check : ''}</div>`).join('');
         sub.style.top = r.offsetTop + 'px';
         sub.classList.remove('hidden');
         $$('.row', sub).forEach((x) => (x.onclick = (ev) => { ev.stopPropagation(); post({ type: 'setting', key: 'model', value: m.value }); post({ type: 'setting', key: 'effort', value: x.dataset.e }); closePop(); }));

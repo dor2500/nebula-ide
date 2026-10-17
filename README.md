@@ -47,6 +47,7 @@ Antigravity, VS Code, Cursor or Windsurf.
 - **Change review**: every edit is snapshotted; review as a diff, accept or reject per file or all at once.
 - **Browser**: built-in browser (`Nebula: Open Browser`) and optional browser control for the agent (Playwright).
 - **Generate commit message** from the Source Control view (✨ button).
+- **Token Saver** (on by default): best results with fewer tokens. Only the coding tools are loaded (measured: 39k → 18k tokens sent with every request), effort is picked automatically (low for quick questions, medium for regular tasks, high for complex work), the agent reads only what it needs, memory stays lean, and subagents run on Sonnet. On a real task this used **48% fewer tokens for the same result**.
 - **Autopilot** (⚡ in the input box): the agent edits files and runs commands without asking. A short deny list (deleting a whole drive, `format`, `git push --force`, shutdown…) still asks.
 - **Keep going** (∞ in the input box): give a goal and the agent keeps improving round after round — picks the next improvement, implements and verifies it — until nothing meaningful is left, the round limit (Settings), or you press Stop.
 - **Queued messages**: keep typing while the agent works — messages wait in line and go out when it finishes (or *Send now*).
