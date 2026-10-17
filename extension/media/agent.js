@@ -20,6 +20,7 @@
     at: '<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="2.5"/><path d="M10.5 8v1a2 2 0 0 0 4 0V8a6.5 6.5 0 1 0-2.5 5.1"/></svg>',
     action: '<svg viewBox="0 0 16 16"><rect x="2.5" y="2.5" width="11" height="11" rx="1.5"/><path d="m6 10 4-4"/></svg>',
     file: '<svg viewBox="0 0 16 16"><path d="M9 2H4.5v12h7V4.5z"/><path d="M9 2v2.5h2.5"/></svg>',
+    folder: '<svg viewBox="0 0 16 16"><path d="M2 4.5h4l1.5 1.5H14v6.5H2z"/></svg>',
     trash: '<svg viewBox="0 0 16 16"><path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.7 8.5h5.6l.7-8.5"/></svg>',
   };
   const EFFORT = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'X-High', max: 'Max' };
@@ -84,7 +85,8 @@
       case 'user': {
         const d = h('div', 'msg user');
         const b = d.appendChild(h('div', 'bubble'));
-        b.textContent = it.text;
+        if (it.images?.length) b.appendChild(h('div', 'bimgs', it.images.map((src) => `<img src="${esc(src)}" alt="">`).join('')));
+        b.appendChild(document.createTextNode(it.text));
         if (it.chips?.length) b.appendChild(h('div', 'bchips', it.chips.map((c) => `<span>${esc(c)}</span>`).join('')));
         return d;
       }
@@ -159,7 +161,7 @@
     app.innerHTML = `
       <div id="list"></div>
       <div id="dock">
-        <div class="hero"><h2>${esc(st.workspace || 'Nebula')}</h2>${st.workspace ? '' : '<button class="link" id="openf">Open a folder to start</button>'}</div>
+        <div class="hero"></div>
         <div class="composer-wrap">
           <div id="pop" class="pop hidden"></div>
           <div class="composer">
@@ -180,7 +182,7 @@
     const list = $('#list');
     for (const it of s.items) upsertDom(it);
     list.scrollTop = list.scrollHeight;
-    $('#openf') && ($('#openf').onclick = () => post({ type: 'openFolder' }));
+    renderHero();
     $('#signin') && ($('#signin').onclick = () => post({ type: 'signIn' }));
     $('#apikey') && ($('#apikey').onclick = () => post({ type: 'apiKey' }));
     $('#ctx').onclick = (e) => { e.stopPropagation(); togglePop('context'); };
@@ -192,12 +194,15 @@
     input.oninput = () => { grow(); saved.draft = input.value; vscode.setState(saved); updateGo(); autocomplete(); };
     input.onkeydown = onKey;
     input.onclick = autocomplete;
+    wireMedia();
     grow(); renderChips(); updateModelBtn(); updateGo(); updateRing();
   }
   function updateRing() {
     const r = $('#ring'); if (!r) return;
     const u = st.usage || {}, c = u.context, p = u.plan;
-    const pct = c ? c.percent : p ? Math.round(p.percent) : 0;
+    r.classList.toggle('hidden', !c);
+    if (!c) return;
+    const pct = c.percent;
     const C = 2 * Math.PI * 6;
     r.className = 'ring' + (pct >= 90 ? ' crit' : pct >= 75 ? ' warn' : '');
     r.innerHTML = `<svg viewBox="0 0 16 16"><circle class="track" cx="8" cy="8" r="6"/><circle class="val" cx="8" cy="8" r="6" stroke-dasharray="${(Math.max(pct, 2) / 100) * C} ${C}"/></svg>`;
@@ -221,11 +226,72 @@
     const el = $('#chips'); if (!el) return;
     el.innerHTML = '';
     chips.forEach((c, i) => {
-      const d = h('span', 'chip', `${c.image ? I.media : c.label.startsWith('@') ? I.file : ''}<span>${esc(c.label.replace(/^@/, ''))}</span><b>×</b>`);
+      const d = h('span', 'chip' + (c.thumb ? ' imgchip' : ''), `${c.thumb ? `<img src="${esc(c.thumb)}" alt="">` : c.image ? I.media : c.label.startsWith('@') ? I.file : ''}<span>${esc(c.label.replace(/^@/, ''))}</span><b>×</b>`);
       $('b', d).onclick = () => { chips.splice(i, 1); renderChips(); updateGo(); };
       el.appendChild(d);
     });
   }
+  /* ================= projects (no folder open) ================= */
+  function renderHero() {
+    const el = $('.hero'); if (!el) return;
+    if (st.workspace) { el.innerHTML = `<h2>${esc(st.workspace)}</h2>`; return; }
+    const projects = st.projects || [];
+    el.innerHTML = `<h2>Nebula</h2>
+      <div class="projects">
+        <div class="p-head"><span>Projects</span><span class="grow"></span><button class="link" id="pfolder" title="${esc(st.projectsDir || '')}">Show folder</button></div>
+        ${projects.length ? projects.map((p) => `<button class="proj" data-p="${esc(p.path)}">${I.folder}<span class="pn">${esc(p.name)}</span><span class="muted small">${ago(p.modified)}</span></button>`).join('') : '<div class="muted small p-empty">No projects yet. Create one to get started.</div>'}
+        <div class="p-actions"><button class="primary" id="newproj">${I.plus}New project</button><button class="link" id="openf">Open other folder…</button></div>
+      </div>`;
+    $$('.proj', el).forEach((b) => (b.onclick = () => post({ type: 'openProject', path: b.dataset.p })));
+    $('#newproj', el).onclick = () => post({ type: 'newProject' });
+    $('#openf', el).onclick = () => post({ type: 'openFolder' });
+    $('#pfolder', el).onclick = () => post({ type: 'revealProjects' });
+  }
+
+  /* ================= images: paste, drop, attach ================= */
+  // Downscale to Claude's recommended size (long edge <= 1568px) and make a small thumbnail.
+  const MAX_EDGE = 1568, THUMB = 160;
+  function loadImg(src) { return new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = rej; im.src = src; }); }
+  function toCanvas(im, maxEdge) {
+    const s = Math.min(1, maxEdge / Math.max(im.naturalWidth, im.naturalHeight));
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.round(im.naturalWidth * s)); c.height = Math.max(1, Math.round(im.naturalHeight * s));
+    c.getContext('2d').drawImage(im, 0, 0, c.width, c.height);
+    return c;
+  }
+  async function addImage(dataUrl, name) {
+    try {
+      const im = await loadImg(dataUrl);
+      const big = toCanvas(im, MAX_EDGE);
+      const keepPng = /^data:image\/png/.test(dataUrl) && big.width * big.height < 1.5e6; // screenshots stay crisp
+      const out = big.toDataURL(keepPng ? 'image/png' : 'image/jpeg', 0.9);
+      const [, mediaType, data] = out.match(/^data:([^;]+);base64,(.*)$/);
+      const thumb = toCanvas(im, THUMB).toDataURL('image/jpeg', 0.8);
+      chips.push({ label: name || `image-${chips.filter((c) => c.image).length + 1}.${keepPng ? 'png' : 'jpg'}`, image: { mediaType, data }, thumb });
+      renderChips(); updateGo(); $('#input')?.focus();
+    } catch { /* not a readable image */ }
+  }
+  const readFile = (f) => new Promise((res) => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(f); });
+  async function addFiles(files) {
+    for (const f of files) if (f.type.startsWith('image/')) await addImage(await readFile(f), f.name && f.name !== 'image.png' ? f.name : '');
+  }
+  function wireMedia() {
+    const input = $('#input'), comp = $('.composer');
+    input.addEventListener('paste', (e) => {
+      const files = [...(e.clipboardData?.files || [])].filter((f) => f.type.startsWith('image/'));
+      if (files.length) { e.preventDefault(); addFiles(files); }
+    });
+    comp.addEventListener('dragover', (e) => { e.preventDefault(); comp.classList.add('drop'); });
+    comp.addEventListener('dragleave', () => comp.classList.remove('drop'));
+    comp.addEventListener('drop', (e) => {
+      e.preventDefault(); comp.classList.remove('drop');
+      const files = [...(e.dataTransfer?.files || [])];
+      if (files.some((f) => f.type.startsWith('image/'))) return addFiles(files);
+      const uris = (e.dataTransfer?.getData('text/uri-list') || e.dataTransfer?.getData('text/plain') || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+      if (uris.length) post({ type: 'dropUris', uris });
+    });
+  }
+
   function send() {
     const input = $('#input');
     const text = input.value.trim();
@@ -383,7 +449,7 @@
       if (same) {
         const list = $('#list'); const stick = nearBottom(list);
         $('#app').className = st.session.items.length ? '' : 'empty';
-        $('.hero h2').textContent = st.workspace || 'Nebula';
+        renderHero();
         updateModelBtn(); updateGo(); updateRing();
         if (pop?.kind === 'model') renderModelPop($('#pop'));
         if (stick) list.scrollTop = list.scrollHeight;
@@ -413,8 +479,7 @@
       if (pop?.kind === 'mentions') renderListPop($('#pop'));
       setTimeout(() => (files = null), 30000);
     } else if (m.type === 'media') {
-      for (const it of m.items) chips.push(it);
-      renderChips(); updateGo(); $('#input')?.focus();
+      (async () => { for (const it of m.items) { if (it.image) await addImage(`data:${it.image.mediaType};base64,${it.image.data}`, it.label); else if (!chips.some((c) => c.label === it.label)) chips.push(it); } renderChips(); updateGo(); $('#input')?.focus(); })();
     } else if (m.type === 'openModelMenu') {
       openPop('model');
     }

@@ -80,6 +80,66 @@ function applyEngineWhenIdle() {
   if (next.version !== engine.active.version) { engine.active = next; log(`Now using Claude engine ${next.version}`); refreshAuth(); syncCapabilities(); }
 }
 
+/* ============================== Projects folder ============================== */
+function projectsDir() {
+  const custom = cfg().get('projectsFolder');
+  let dir = custom && custom.trim() ? custom.trim().replace(/^~(?=$|[\\/])/, os.homedir()) : null;
+  if (!dir) {
+    const docs = [path.join(os.homedir(), 'Documents'), path.join(os.homedir(), 'OneDrive', 'Documents')].find((d) => fs.existsSync(d)) || os.homedir();
+    dir = path.join(docs, 'Nebula Projects');
+  }
+  try { fs.mkdirSync(dir, { recursive: true }); } catch {}
+  return dir;
+}
+function listProjects(limit = 12) {
+  const dir = projectsDir();
+  try {
+    return fs.readdirSync(dir, { withFileTypes: true }).filter((d) => d.isDirectory() && !d.name.startsWith('.'))
+      .map((d) => { const p = path.join(dir, d.name); let m = 0; try { m = fs.statSync(p).mtimeMs; } catch {} return { name: d.name, path: p, modified: m }; })
+      .sort((a, b) => b.modified - a.modified).slice(0, limit);
+  } catch { return []; }
+}
+async function newProject() {
+  const dir = projectsDir();
+  const name = await vscode.window.showInputBox({
+    prompt: `New project in ${dir}`, placeHolder: 'my-app', ignoreFocusOut: true,
+    validateInput: (v) => (!v.trim() ? null : /[<>:"/\\|?*]/.test(v) ? 'A name can’t contain < > : " / \\ | ? *' : fs.existsSync(path.join(dir, v.trim())) ? 'A project with this name already exists' : null),
+  });
+  if (!name || !name.trim()) return;
+  const p = path.join(dir, name.trim());
+  fs.mkdirSync(p, { recursive: true });
+  vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(p), { forceReuseWindow: !workspaceRoot() });
+}
+async function openProject(p) {
+  if (!p) {
+    const items = listProjects(200).map((x) => ({ label: `$(folder) ${x.name}`, description: ago(x.modified), path: x.path }));
+    items.push({ label: '$(add) New project…', path: '__new' }, { label: '$(folder-opened) Show projects folder', path: '__reveal' });
+    const pick = await vscode.window.showQuickPick(items, { placeHolder: `Projects in ${projectsDir()}` });
+    if (!pick) return;
+    if (pick.path === '__new') return newProject();
+    if (pick.path === '__reveal') return revealProjects();
+    p = pick.path;
+  }
+  vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(p), { forceReuseWindow: !workspaceRoot() });
+}
+function revealProjects() { vscode.env.openExternal(vscode.Uri.file(projectsDir())); }
+// Files dropped onto the composer from the explorer: images become attachments, other files become @mentions.
+function droppedItems(uris) {
+  const types = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp' };
+  const out = [];
+  for (const u of uris) {
+    let fsPath;
+    try { fsPath = /^[a-z][\w+.-]*:/i.test(u) && !/^[a-z]:[\\/]/i.test(u) ? vscode.Uri.parse(u).fsPath : u; } catch { continue; }
+    if (!fsPath || !fs.existsSync(fsPath) || fs.statSync(fsPath).isDirectory()) continue;
+    const ext = path.extname(fsPath).slice(1).toLowerCase();
+    if (types[ext]) {
+      const buf = fs.readFileSync(fsPath);
+      if (buf.length <= 20 * 1024 * 1024) out.push({ label: path.basename(fsPath), image: { mediaType: types[ext], data: buf.toString('base64') } });
+    } else out.push({ label: '@' + relPath(fsPath), text: `Mentioned file: ${relPath(fsPath)}` });
+  }
+  return out;
+}
+
 /* ============================== Usage (plan limits, tokens, context) ============================== */
 let planUsage = null;     // { fetched, subscription, available, limits: [{ key, label, percent, resetsAt, severity }], extra }
 let usagePanel = null, usageItem = null;
@@ -267,6 +327,8 @@ function statePayload() {
     sessions: [...sessions.values()].filter((x) => !x.summary().empty || x.busy).sort((a, b) => b.updated - a.updated).map((x) => x.summary()),
     workspace: workspaceRoot() ? path.basename(workspaceRoot()) : null,
     engine: engine.active.version,
+    projects: workspaceRoot() ? [] : listProjects(),
+    projectsDir: projectsDir(),
     usage: { context: s.context, tokens: s.usage, plan: (planUsage?.limits || []).find((l) => /session|five_hour/.test(l.key)) || null },
   };
 }
@@ -302,7 +364,7 @@ async function pickMedia() {
   return picks.map((u) => {
     const ext = path.extname(u.fsPath).slice(1).toLowerCase();
     const buf = fs.readFileSync(u.fsPath);
-    if (buf.length > 5 * 1024 * 1024) { vscode.window.showWarningMessage(`${path.basename(u.fsPath)} is larger than 5 MB and was skipped.`); return null; }
+    if (buf.length > 20 * 1024 * 1024) { vscode.window.showWarningMessage(`${path.basename(u.fsPath)} is larger than 20 MB and was skipped.`); return null; }
     return { label: path.basename(u.fsPath), image: { mediaType: types[ext] || 'image/png', data: buf.toString('base64') } };
   }).filter(Boolean);
 }
@@ -335,6 +397,10 @@ async function onWebviewMessage(m, webview) {
     case 'openManager': openManager(); break;
     case 'openFolder': vscode.commands.executeCommand('workbench.action.files.openFolder'); break;
     case 'openUsage': openUsage(); break;
+    case 'newProject': newProject(); break;
+    case 'openProject': openProject(m.path); break;
+    case 'revealProjects': revealProjects(); break;
+    case 'dropUris': webview.postMessage({ type: 'media', items: droppedItems(m.uris || []) }); break;
   }
 }
 function deleteSession(id) {
@@ -370,7 +436,7 @@ async function runAgent(s, text, context) {
   if (!auth.ok) { await refreshAuth(); if (!auth.ok) { vscode.window.showWarningMessage('Sign in to Claude to use the agent.', 'Sign in').then((a) => a && signIn()); return; } }
   const { query } = await loadSdk();
   if (s.title === 'New conversation') s.title = (text.trim().split('\n')[0] || 'Image').slice(0, 60);
-  s.cwd = s.cwd || workspaceRoot() || os.homedir();
+  s.cwd = s.cwd || workspaceRoot() || projectsDir();
 
   const parts = [];
   const ed = vscode.window.activeTextEditor;
@@ -378,7 +444,7 @@ async function runAgent(s, text, context) {
   for (const c of context) if (c.text) parts.push(c.text);
   parts.push(text);
   const images = context.filter((c) => c.image);
-  s.upsert({ key: uid(), kind: 'user', text, chips: context.map((c) => c.label) });
+  s.upsert({ key: uid(), kind: 'user', text, chips: context.filter((c) => !c.thumb).map((c) => c.label), images: context.filter((c) => c.thumb).map((c) => c.thumb) });
 
   s.busy = true; s.abort = new AbortController(); s.stderr = '';
   broadcast({ type: 'busy', sessionId: s.id, busy: true });
@@ -405,7 +471,7 @@ async function runAgent(s, text, context) {
   const makePrompt = () => !images.length ? promptText : (async function* () {
     yield {
       type: 'user', parent_tool_use_id: null, origin: { kind: 'human' },
-      message: { role: 'user', content: [...images.map((c) => ({ type: 'image', source: { type: 'base64', media_type: c.image.mediaType, data: c.image.data } })), { type: 'text', text: promptText || 'See the attached image.' }] },
+      message: { role: 'user', content: [...images.map((c) => ({ type: 'image', source: { type: 'base64', media_type: c.image.mediaType, data: c.image.data } })), { type: 'text', text: promptText || 'The user pasted this image without a message. Work out what it shows (for example an error or bug screenshot, a UI design or mockup, a diagram, or code) and what they most likely want, then help with that directly — fix it, build it, or explain it. If it is genuinely unclear, describe what you see in one or two sentences and ask one short question.' }] },
     };
   })();
   const once = async (opts, retried) => {
@@ -768,6 +834,13 @@ async function applyFirstRunSettings() {
   await set('telemetry', 'telemetryLevel', 'off');
   ctx.globalState.update('nebula.defaultsApplied', true);
 }
+// The Open Folder / Save dialogs start in the projects folder.
+async function applyProjectsDefault() {
+  if (ctx.globalState.get('nebula.projectsDefaultApplied')) return;
+  const c = vscode.workspace.getConfiguration('files.dialog');
+  if (c.inspect('defaultPath')?.globalValue === undefined) await c.update('defaultPath', projectsDir(), vscode.ConfigurationTarget.Global);
+  ctx.globalState.update('nebula.projectsDefaultApplied', true);
+}
 
 function activate(context) {
   ctx = context;
@@ -789,6 +862,9 @@ function activate(context) {
     vscode.commands.registerCommand('nebula.closeAgent', () => vscode.commands.executeCommand('workbench.action.closeAuxiliaryBar')),
     vscode.commands.registerCommand('nebula.openAgentManager', openManager),
     vscode.commands.registerCommand('nebula.openUsage', openUsage),
+    vscode.commands.registerCommand('nebula.newProject', newProject),
+    vscode.commands.registerCommand('nebula.openProject', () => openProject()),
+    vscode.commands.registerCommand('nebula.revealProjects', revealProjects),
     vscode.commands.registerCommand('nebula.inlineEdit', inlineEdit),
     vscode.commands.registerCommand('nebula.selectModel', async () => { await vscode.commands.executeCommand('nebula.agentView.focus'); panelView?.webview.postMessage({ type: 'openModelMenu' }); }),
     vscode.commands.registerCommand('nebula.signIn', signIn),
@@ -812,7 +888,7 @@ function activate(context) {
   planUsage = context.globalState.get('nebula.planUsage', null);
   const usageTimer = setInterval(fetchPlanUsage, 10 * 60 * 1000);
   context.subscriptions.push({ dispose: () => clearInterval(usageTimer) });
-  applyFirstRunSettings();
+  applyFirstRunSettings().then(applyProjectsDefault);
   refreshAuth().then((ok) => { pushUsage(); if (ok) { syncCapabilities(); fetchPlanUsage(); } });
 
   // Like Antigravity: the Agent panel is always open on the right at startup.

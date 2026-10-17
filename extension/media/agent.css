@@ -241,3 +241,23 @@ body.usage { background: var(--vscode-editor-background); }
 .ring .val { stroke: var(--vscode-charts-blue, var(--focus)); stroke-width: 2.4; fill: none; stroke-linecap: round; transition: stroke-dasharray .4s; }
 .ring.warn .val { stroke: var(--vscode-charts-yellow, var(--warn)); }
 .ring.crit .val { stroke: var(--vscode-charts-red, var(--err)); }
+
+/* ---------- projects (no folder open) ---------- */
+.projects { margin-top: 10px; }
+.p-head { display: flex; align-items: center; font-size: 12px; color: var(--muted); padding: 0 2px 6px; }
+.proj { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 6px 8px; border-radius: 7px; }
+.proj:hover { background: var(--hover); }
+.proj svg { color: var(--muted); }
+.proj .pn { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.p-empty { padding: 4px 2px 8px; }
+.p-actions { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
+.p-actions .primary { display: inline-flex; align-items: center; gap: 6px; }
+.p-actions .primary svg { width: 13px; height: 13px; }
+#app.empty .hero { max-height: 50vh; overflow-y: auto; }
+
+/* ---------- images ---------- */
+.chip.imgchip { padding: 2px 7px 2px 2px; }
+.chip.imgchip img { width: 26px; height: 26px; object-fit: cover; border-radius: 4px; flex: none; }
+.bimgs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.bimgs img { max-width: 160px; max-height: 120px; border-radius: 6px; border: 1px solid var(--line); display: block; }
+.composer.drop { border-color: var(--focus); box-shadow: 0 0 0 2px color-mix(in srgb, var(--focus) 30%, transparent); }

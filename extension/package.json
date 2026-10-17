@@ -2,7 +2,7 @@
   "name": "nebula-agent",
   "displayName": "Nebula Agent",
   "description": "Claude-powered agent for Nebula IDE: agent panel, Agent Manager, change review and Antigravity import.",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "publisher": "nebula",
   "license": "MIT",
   "engines": {
@@ -133,6 +133,23 @@
         "title": "Usage",
         "category": "Nebula",
         "icon": "$(pulse)"
+      },
+      {
+        "command": "nebula.newProject",
+        "title": "New Project",
+        "category": "Nebula",
+        "icon": "$(new-folder)"
+      },
+      {
+        "command": "nebula.openProject",
+        "title": "Open Project",
+        "category": "Nebula",
+        "icon": "$(folder-opened)"
+      },
+      {
+        "command": "nebula.revealProjects",
+        "title": "Show Projects Folder",
+        "category": "Nebula"
       }
     ],
     "menus": {
@@ -191,6 +208,16 @@
           "command": "nebula.openUsage",
           "when": "view == nebula.agentView",
           "group": "1_agent@3"
+        },
+        {
+          "command": "nebula.newProject",
+          "when": "view == nebula.agentView",
+          "group": "0_project@1"
+        },
+        {
+          "command": "nebula.openProject",
+          "when": "view == nebula.agentView",
+          "group": "0_project@2"
         }
       ],
       "editor/context": [
@@ -279,6 +306,11 @@
             "xhigh",
             "max"
           ]
+        },
+        "nebula.projectsFolder": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Folder where all your projects live. Empty = `Documents\\Nebula Projects`. New projects are created here and the Open Folder dialog starts here."
         }
       }
     },

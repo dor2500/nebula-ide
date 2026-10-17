@@ -38,6 +38,8 @@ entry in Apps & features for uninstalling. On first launch, sign in with your Cl
 - **Nebula Agent** (built-in extension, `extension/`):
   - Agent panel on the right (`Ctrl+L`), new conversation (`Ctrl+Shift+L`), past conversations, Agent Manager (`Ctrl+E`), edit selection (`Ctrl+I`).
   - Composer with `+` Add Context (media, mentions, actions), `@` file mentions, `/` actions and a model + effort picker (`Ctrl+/`).
+  - **Images**: paste a screenshot (`Ctrl+V`), drag one in, or attach it — send it without a message and the agent works out what it is (a bug, a design, an error) and helps.
+  - **Projects folder**: every project lives in `Documents\Nebula Projects` (configurable with `nebula.projectsFolder`). With no folder open, the agent panel lists your projects and creates new ones; the Open Folder dialog starts there.
   - The model list and `/` actions come live from the Claude engine, so new models and commands appear automatically.
   - Change review: every edit is snapshotted; review as a diff, accept or reject per file or all at once.
   - Sign in with your Claude account (official Claude Code login) or an Anthropic API key.
