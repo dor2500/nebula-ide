@@ -37,6 +37,13 @@
         ${row('Add a provider', 'OpenRouter, OpenAI, Gemini, DeepSeek, Groq, Mistral, xAI, LM Studio or any OpenAI-compatible service.', link('addProvider', 'Add'))}
         ${row('When Claude runs out', 'If your Claude plan limit is reached, continue the conversation automatically on this model.', `<select data-key="fallbackModel"><option value="&quot;&quot;">Ask me</option>${st.models.fallbackOptions.map(([v, l]) => `<option value="${esc(JSON.stringify(v))}" ${v === st.models.fallback ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`)}
       </section>
+      <section><h3>Memory</h3>
+        ${row('Agent Memory', 'The agent keeps notes per project (and global notes) and reads them at the start of every conversation. Start a message with # to save a note yourself.', select('memoryEnabled', ONOFF, s.memoryEnabled))}
+        ${row('Recent Conversations in New Chats', 'New conversations get a short summary of the project\'s latest conversations, so the agent knows what was done before.', select('memoryRecentConversations', ONOFF, s.memoryRecentConversations))}
+        ${row('Project memory', 'The notes for the open project.', link('openProjectMemory', 'Open'))}
+        ${row('Global memory', 'Notes that apply to every project.', link('openGlobalMemory', 'Open'))}
+        ${row('On Startup', 'What the agent panel shows when Nebula opens.', select('startupView', [['recent', 'Recent conversations'], ['lastConversation', 'Last conversation']], s.startupView))}
+      </section>
       <section><h3>Projects</h3>
         ${row('Projects Folder', st.projectsDir, link('changeProjectsFolder', 'Change'))}
         <div class="path muted">${esc(st.projectsDir)}</div>

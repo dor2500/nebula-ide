@@ -2,7 +2,7 @@
   "name": "nebula-agent",
   "displayName": "Nebula Agent",
   "description": "Claude-powered agent for Nebula IDE: agent panel, Agent Manager, change review and Antigravity import.",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "publisher": "nebula",
   "license": "MIT",
   "engines": {
@@ -178,6 +178,12 @@
         "command": "nebula.changelog",
         "title": "Open Changelog",
         "category": "Nebula"
+      },
+      {
+        "command": "nebula.openMemory",
+        "title": "Open Agent Memory",
+        "category": "Nebula",
+        "icon": "$(note)"
       }
     ],
     "menus": {
@@ -256,6 +262,11 @@
           "command": "nebula.importFrom",
           "when": "view == nebula.agentView",
           "group": "3_account@2"
+        },
+        {
+          "command": "nebula.openMemory",
+          "when": "view == nebula.agentView",
+          "group": "2_config@3"
         }
       ],
       "editor/context": [
@@ -416,6 +427,29 @@
             65536
           ],
           "description": "Context size for local models."
+        },
+        "nebula.memoryEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "The agent keeps notes per project (and global notes) in ~/.nebula/memory and reads them at the start of every conversation."
+        },
+        "nebula.memoryRecentConversations": {
+          "type": "boolean",
+          "default": true,
+          "description": "New conversations get a short summary of the project's latest conversations."
+        },
+        "nebula.startupView": {
+          "type": "string",
+          "default": "recent",
+          "enum": [
+            "recent",
+            "lastConversation"
+          ],
+          "enumDescriptions": [
+            "Start on a new conversation with recent conversations listed",
+            "Reopen the last conversation"
+          ],
+          "description": "What the agent panel shows when Nebula opens."
         }
       }
     },

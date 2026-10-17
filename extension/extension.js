@@ -186,7 +186,7 @@ const LITE_PROMPT = `You are a coding agent inside Nebula IDE, working in the cu
 Use the provided tools to read files, change files and run commands — call them, don't describe them.
 Work step by step, check your work, and keep replies short. When you change files, end with a one-line summary.`;
 // Engine options for a model from another provider.
-async function providerOptions(modelValue, base) {
+async function providerOptions(modelValue, base, s) {
   const { provider, model } = splitModel(modelValue);
   const p = await resolveProvider(provider);
   if (!p) throw new Error(`Model provider "${provider}" is not set up. Add it in Settings → Models.`);
@@ -198,7 +198,7 @@ async function providerOptions(modelValue, base) {
   const o = { ...base, env, model, strictMcpConfig: true, mcpServers: base.mcpServers || {} };
   delete o.effort;
   if (p.lite) { // small local models: short instructions and only the core tools so everything fits their context
-    o.systemPrompt = LITE_PROMPT + (cfg().get('conversationMode') === 'planning' ? '\nFor bigger tasks, briefly list your plan before acting.' : '');
+    o.systemPrompt = LITE_PROMPT + (cfg().get('conversationMode') === 'planning' ? '\nFor bigger tasks, briefly list your plan before acting.' : '') + (s ? memoryPrompt(s, { lite: true }) : '');
     o.tools = ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'];
     o.settingSources = [];
   }
@@ -250,6 +250,83 @@ function maybeWarnLimit() {
     });
 }
 const modelDisplay = (v) => (isProviderModel(v) ? `${splitModel(v).model} — ${providerList().find((p) => p.id === splitModel(v).provider)?.name || splitModel(v).provider}` : v);
+
+/* ============================== Memory ============================== */
+// Persistent memory the agent reads at the start of every conversation and updates itself:
+//   ~/.nebula/memory/global.md              — facts and preferences for all projects
+//   ~/.nebula/memory/<project>-<hash>.md    — this project's notes
+// plus short summaries of the project's recent conversations, so a new chat knows what happened before.
+const MEMORY_DIR = path.join(os.homedir(), '.nebula', 'memory');
+const MEMORY_MAX = 12000; // characters of each memory file put into the prompt
+function memoryFile(dir) {
+  if (!dir) return null;
+  const hash = require('crypto').createHash('sha1').update(path.resolve(dir).toLowerCase()).digest('hex').slice(0, 8);
+  const name = path.basename(dir).replace(/[^\p{L}\p{N}._-]+/gu, '-').slice(0, 40) || 'project';
+  return path.join(MEMORY_DIR, `${name}-${hash}.md`);
+}
+const globalMemoryFile = () => path.join(MEMORY_DIR, 'global.md');
+const isMemoryPath = (p) => !!p && path.resolve(p).toLowerCase().startsWith(MEMORY_DIR.toLowerCase() + path.sep);
+function ensureMemoryFiles(dir) {
+  fs.mkdirSync(MEMORY_DIR, { recursive: true });
+  const g = globalMemoryFile();
+  if (!fs.existsSync(g)) fs.writeFileSync(g, '# Global memory\n\nFacts and preferences that apply to every project.\n');
+  const f = memoryFile(dir);
+  if (f && !fs.existsSync(f)) fs.writeFileSync(f, `# ${path.basename(dir)} — project memory\n\nProject: ${dir}\n`);
+  return f;
+}
+const readText = (f) => { try { return fs.readFileSync(f, 'utf8'); } catch { return ''; } };
+function appendMemory(dir, note, global = false) {
+  const f = global ? globalMemoryFile() : ensureMemoryFiles(dir) || globalMemoryFile();
+  ensureMemoryFiles(dir);
+  fs.appendFileSync(f, `${readText(f).endsWith('\n') ? '' : '\n'}- ${note.trim()} _(${new Date().toISOString().slice(0, 10)})_\n`);
+  return f;
+}
+// One-paragraph summaries of the latest finished conversations in a folder (no extra model calls).
+function recentConversations(dir, excludeId, limit = 5) {
+  return ctx.globalState.get(SESSIONS_KEY, [])
+    .filter((d) => d.id !== excludeId && d.items?.length && sameDir(d.cwd, dir))
+    .sort((a, b) => b.updated - a.updated).slice(0, limit)
+    .map((d) => {
+      const lastAnswer = [...d.items].reverse().find((i) => i.kind === 'text' && i.text)?.text || '';
+      const files = [...new Set(d.items.filter((i) => i.kind === 'tool' && /^(Edit|Write|MultiEdit|NotebookEdit)$/.test(i.name)).map((i) => relPath(i.input?.file_path || i.input?.notebook_path || '', dir)).filter(Boolean))];
+      return { id: d.id, title: d.title, updated: d.updated, answer: lastAnswer.replace(/\s+/g, ' ').trim().slice(0, 280), files: files.slice(0, 8) };
+    });
+}
+function memoryPrompt(s, { lite = false } = {}) {
+  if (cfg().get('memoryEnabled') === false) return '';
+  const dir = s.cwd || workspaceRoot();
+  const pf = ensureMemoryFiles(dir);
+  const clip = (t) => (t.length > MEMORY_MAX ? t.slice(0, MEMORY_MAX) + '\n…(truncated)' : t);
+  let out = `\n\n# Memory\nYou have persistent memory across conversations. Use it: read it now, and when you learn something worth keeping — the user's preferences, decisions, how this project works, what's done and what's left — update the memory file with your file tools (keep it short and organised; rewrite outdated lines instead of piling up). Don't mention the memory file unless asked.\n`;
+  if (pf) out += `\n## Project memory (${pf})\n${clip(readText(pf)).trim() || '(empty)'}\n`;
+  out += `\n## Global memory (${globalMemoryFile()})\n${clip(readText(globalMemoryFile())).trim() || '(empty)'}\n`;
+  if (!s.sdkSessionId && dir && cfg().get('memoryRecentConversations') !== false) {
+    const recent = recentConversations(dir, s.id, lite ? 3 : 5);
+    if (recent.length) {
+      out += `\n## Recent conversations in this project (most recent first)\n` + recent.map((r) => `- "${r.title}" (${ago(r.updated)})${r.files.length ? ` — files: ${r.files.join(', ')}` : ''}${r.answer ? `\n  Outcome: ${lite ? r.answer.slice(0, 160) : r.answer}` : ''}`).join('\n') + '\n';
+    }
+  }
+  return out;
+}
+// Recent conversations for the empty agent panel: this project's, or every project's when no folder is open.
+function recentList(excludeId) {
+  const root = workspaceRoot();
+  if (root) return recentConversations(root, excludeId, 6).map((r) => ({ id: r.id, title: r.title, updated: r.updated, answer: r.answer.slice(0, 140) }));
+  return ctx.globalState.get(SESSIONS_KEY, []).filter((d) => d.items?.length && d.id !== excludeId).sort((a, b) => b.updated - a.updated).slice(0, 8)
+    .map((d) => ({ id: d.id, title: d.title, updated: d.updated, project: d.cwd ? path.basename(d.cwd) : null, answer: ([...d.items].reverse().find((i) => i.kind === 'text')?.text || '').replace(/\s+/g, ' ').slice(0, 140) }));
+}
+function openRecent(id) {
+  if (sessions.has(id)) { activeId = id; persist(); pushState(); return; }
+  const d = ctx.globalState.get(SESSIONS_KEY, []).find((x) => x.id === id);
+  if (!d) return;
+  if (d.cwd && fs.existsSync(d.cwd)) { ctx.globalState.update('nebula.pendingActive', id); vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(d.cwd), { forceReuseWindow: !workspaceRoot() }); }
+  else { sessions.set(d.id, new Session(d)); activeId = d.id; persist(); pushState(); }
+}
+async function openMemory(which) {
+  const dir = workspaceRoot() || (active().cwd);
+  const f = which === 'global' ? (ensureMemoryFiles(dir), globalMemoryFile()) : ensureMemoryFiles(dir) || globalMemoryFile();
+  vscode.window.showTextDocument(vscode.Uri.file(f));
+}
 
 /* ============================== Projects folder ============================== */
 function projectsDir() {
@@ -532,6 +609,8 @@ function loadSessions() {
   activeId = ctx.workspaceState.get('nebula.activeId');
   const pending = ctx.globalState.get('nebula.pendingActive'); // set just before a new chat's folder is opened
   if (pending && sessions.has(pending)) { activeId = pending; ctx.globalState.update('nebula.pendingActive', undefined); }
+  // Like Antigravity, start on a fresh conversation with the recent ones listed (unless set to reopen the last one).
+  else if (cfg().get('startupView') !== 'lastConversation') activeId = null;
   if (!sessions.has(activeId)) activeId = null;
   if (!activeId) newSession();
 }
@@ -562,6 +641,7 @@ function statePayload() {
     engine: engine.active.version,
     projects: workspaceRoot() ? [] : listProjects(),
     providers: providerList(),
+    recent: recentList(s.id),
     queue: (s.queue || []).map((q) => ({ id: q.id, text: q.text, labels: (q.context || []).map((c) => c.label) })),
     projectsDir: projectsDir(),
     usage: { context: s.context, tokens: s.usage, plan: (planUsage?.limits || []).find((l) => /session|five_hour/.test(l.key)) || null },
@@ -610,12 +690,22 @@ async function onWebviewMessage(m, webview) {
     case 'ready': pushState(); break;
     case 'send':
       if (!s) break;
+      // '# note' saves straight to memory (like Claude Code); '#global note' goes to the global memory.
+      if (/^#(?!#)\s*\S/.test(m.text || '') && !(m.context || []).length) {
+        const isGlobal = /^#\s*global\b/i.test(m.text);
+        const note = m.text.replace(/^#\s*(global\b)?\s*/i, '');
+        const f = appendMemory(s.cwd || workspaceRoot() || projectsDir(), note, isGlobal);
+        s.upsert({ key: uid(), kind: 'note', text: `Saved to ${isGlobal ? 'global' : 'project'} memory: ${note}`, path: f });
+        persist(); break;
+      }
       if (s.busy) { (s.queue = s.queue || []).push({ id: uid(), text: m.text, context: m.context || [] }); pushQueue(s); }
       else runAgent(s, m.text, m.context || []);
       break;
     case 'unqueue': if (s?.queue) { s.queue = s.queue.filter((q) => q.id !== m.id); pushQueue(s); } break;
     case 'sendNow': if (s?.queue) { const i = s.queue.findIndex((q) => q.id === m.id); if (i > 0) s.queue.unshift(s.queue.splice(i, 1)[0]); pushQueue(s); stopAgent(s); } break;
     case 'refreshModels': detectOllama(); break;
+    case 'openRecent': openRecent(m.id); break;
+    case 'openMemory': openMemory(m.which); break;
     case 'addProvider': addProvider(); break;
     case 'limitChoice': if (s) continueOnModel(s, m.model, !!m.always); break;
     case 'startBackground': { const ns = new Session(); sessions.set(ns.id, ns); persist(); runAgent(ns, m.text, []); pushState(); break; }
@@ -711,7 +801,8 @@ async function runAgent(s, text, context, opts = {}) {
     abortController: s.abort,
     env: await agentEnv(),
     settingSources: ['user', 'project', 'local'],
-    systemPrompt: { type: 'preset', preset: 'claude_code', append: SYSTEM_APPEND + (mode === 'planning' ? '\n' + PLANNING_APPEND : '') },
+    systemPrompt: { type: 'preset', preset: 'claude_code', append: SYSTEM_APPEND + (mode === 'planning' ? '\n' + PLANNING_APPEND : '') + memoryPrompt(s) },
+    additionalDirectories: [MEMORY_DIR],
     canUseTool: (toolName, input, opts) => askPermission(s, toolName, input, opts),
     hooks: { PreToolUse: [{ matcher: 'Edit|Write|MultiEdit|NotebookEdit', hooks: [async (inp) => { snapshot(s, inp.tool_input); return {}; }] }] },
     stderr: (d) => { s.stderr = (s.stderr + d).slice(-4000); },
@@ -721,7 +812,7 @@ async function runAgent(s, text, context, opts = {}) {
 
   let runOptions = options;
   if (isProviderModel(modelValue)) {
-    try { runOptions = await providerOptions(modelValue, options); }
+    try { runOptions = await providerOptions(modelValue, options, s); }
     catch (e) { s.upsert({ key: uid(), kind: 'error', text: String(e.message || e) }); s.busy = false; s.abort = null; broadcast({ type: 'busy', sessionId: s.id, busy: false }); return; }
   }
   const promptText = parts.join('\n\n');
@@ -842,7 +933,7 @@ function isSafeCommand(cmd = '') {
   return cmd.split(/&&|\|\||;|\|/).map((x) => x.trim()).filter(Boolean).every((x) => SAFE_CMD.test(x));
 }
 function autoDecision(toolName, input) {
-  if (EDIT_TOOLS.test(toolName)) return policy('reviewPolicy') === 'requestReview' ? 'ask' : 'allow';
+  if (EDIT_TOOLS.test(toolName)) return isMemoryPath(input?.file_path) || policy('reviewPolicy') !== 'requestReview' ? 'allow' : 'ask';
   if (CMD_TOOLS.test(toolName)) { const p = policy('autoExecution'); return p === 'alwaysProceed' ? 'allow' : p === 'requestReview' ? 'ask' : isSafeCommand(input?.command) ? 'allow' : 'ask'; }
   return 'allow';
 }
@@ -869,7 +960,7 @@ function resolvePermission(s, key, decision) {
 /* ============================== Change review ============================== */
 function snapshot(s, input = {}) {
   const p = input.file_path || input.notebook_path;
-  if (!p || s.changes.has(p)) return;
+  if (!p || s.changes.has(p) || isMemoryPath(p)) return; // memory notes aren't project changes
   try { s.changes.set(p, fs.readFileSync(p, 'utf8')); } catch { s.changes.set(p, null); }
 }
 const snapScheme = 'nebula-original';
@@ -979,6 +1070,7 @@ async function moreOptions() {
     { label: '$(git-compare) Review agent changes', cmd: 'nebula.reviewChanges' },
     { label: '$(pulse) Usage', description: 'Plan limits, tokens and context', cmd: 'nebula.openUsage' },
     { label: '$(book) Customizations', description: 'Rules and MCP servers', cmd: 'nebula.customizations' },
+    { label: '$(note) Memory', description: 'What the agent remembers about this project', cmd: 'nebula.openMemory' },
     { label: 'Account', kind: vscode.QuickPickItemKind.Separator },
     { label: `$(account) ${auth.ok ? auth.label : 'Not signed in'}`, description: auth.ok ? 'Sign out' : 'Sign in', cmd: auth.ok ? 'nebula.signOut' : 'nebula.signIn' },
     { label: '$(key) Use an Anthropic API key', cmd: 'nebula.setApiKey' },
@@ -1190,7 +1282,8 @@ function settingsState() {
       contextLength: cfg().get('localContextLength') || 16384,
     },
     settings: {
-      autoFixLints: cfg().get('autoFixLints') !== false, autoExecution: policy('autoExecution'), reviewPolicy: policy('reviewPolicy'),
+      autoFixLints: cfg().get('autoFixLints') !== false,
+      memoryEnabled: cfg().get('memoryEnabled') !== false, memoryRecentConversations: cfg().get('memoryRecentConversations') !== false, startupView: cfg().get('startupView') || 'recent', autoExecution: policy('autoExecution'), reviewPolicy: policy('reviewPolicy'),
       conversationMode: cfg().get('conversationMode'), browserAgent: !!cfg().get('browserAgent'), newChatCreatesProject: cfg().get('newChatCreatesProject') !== false,
     },
   };
@@ -1214,7 +1307,7 @@ function openSettings() {
     if (m.type === 'theme') { await vscode.workspace.getConfiguration('workbench').update(m.kind === 'icon' ? 'iconTheme' : 'colorTheme', m.value === 'null' ? null : m.value, vscode.ConfigurationTarget.Global); pushSettings(); }
     if (m.type === 'action') {
       const run = {
-        customizations: () => customizations(), changeProjectsFolder, addProvider, removeProvider: () => removeProvider(m.id), refreshModels: detectOllama, browseThemes: () => vscode.commands.executeCommand('workbench.action.selectTheme'),
+        customizations: () => customizations(), changeProjectsFolder, openProjectMemory: () => openMemory('project'), openGlobalMemory: () => openMemory('global'), addProvider, removeProvider: () => removeProvider(m.id), refreshModels: detectOllama, browseThemes: () => vscode.commands.executeCommand('workbench.action.selectTheme'),
         signIn, signOut, apiKey: setApiKey, updateEngine: () => checkEngineUpdate(true), importFrom: importFromEditor,
         advanced: () => vscode.commands.executeCommand('workbench.action.openSettings', '@ext:nebula.nebula-agent'),
         keybindings: () => vscode.commands.executeCommand('workbench.action.openGlobalKeybindings', 'nebula.'),
@@ -1299,6 +1392,7 @@ function activate(context) {
     vscode.commands.registerCommand('nebula.closeAgent', () => vscode.commands.executeCommand('workbench.action.closeAuxiliaryBar')),
     vscode.commands.registerCommand('nebula.openAgentManager', openManager),
     vscode.commands.registerCommand('nebula.openUsage', openUsage),
+    vscode.commands.registerCommand('nebula.openMemory', () => openMemory('project')),
     vscode.commands.registerCommand('nebula.newProject', newProject),
     vscode.commands.registerCommand('nebula.openSettings', openSettings),
     vscode.commands.registerCommand('nebula.importFrom', importFromEditor),

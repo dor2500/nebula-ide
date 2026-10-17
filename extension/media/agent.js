@@ -107,6 +107,7 @@
         }
         const d = h('div', `step ${it.status || 'running'}`);
         const file = it.input?.file_path || it.input?.notebook_path;
+        if (file && /[\\/]\.nebula[\\/]memory[\\/]/i.test(file)) { const m = h('div', 'step ' + (it.status || 'running')); m.innerHTML = `<div class="step-head"><span class="chev">${I.chev}</span><span class="verb">${it.name === 'Read' ? 'Read memory' : 'Updated memory'}</span></div>`; return m; }
         const ds = isEdit(it.name) ? diffStat(it) : null;
         d.innerHTML = `<div class="step-head"><span class="chev">${I.chev}</span><span class="verb">${esc(LABEL[it.name] || it.name.replace(/^mcp__/, '').replace(/__/g, ' · '))}</span>` +
           `<span class="arg ${file ? 'link' : ''}">${file ? I.file : ''}${esc(arg(it.name, it.input))}</span>` +
@@ -264,9 +265,20 @@
     });
   }
   /* ================= projects (no folder open) ================= */
+  function recentHtml() {
+    const r = st.recent || [];
+    if (!r.length) return '';
+    return `<div class="recent"><div class="p-head"><span>Recent conversations</span></div>` +
+      r.map((x) => `<button class="rec" data-id="${esc(x.id)}"><span class="rt"><span class="rtt">${esc(x.title)}</span><span class="muted small">${x.project ? esc(x.project) + ' · ' : ''}${ago(x.updated)}</span></span>${x.answer ? `<span class="ra muted small">${esc(x.answer)}</span>` : ''}</button>`).join('') + `</div>`;
+  }
+  function wireRecent(el) { $$('.rec', el).forEach((b) => (b.onclick = () => post({ type: 'openRecent', id: b.dataset.id }))); }
   function renderHero() {
     const el = $('.hero'); if (!el) return;
-    if (st.workspace) { el.innerHTML = `<h2>${esc(st.workspace)}</h2>`; return; }
+    if (st.workspace) {
+      el.innerHTML = `<h2>${esc(st.workspace)}</h2>${recentHtml()}<div class="muted small p-hint">The agent remembers this project between conversations. Start a message with <b>#</b> to save a note to its memory.</div>`;
+      wireRecent(el);
+      return;
+    }
     const projects = st.projects || [];
     el.innerHTML = `<h2>Nebula</h2>
       <div class="projects">
@@ -279,6 +291,8 @@
     $('#newproj', el).onclick = () => post({ type: 'newProject' });
     $('#openf', el).onclick = () => post({ type: 'openFolder' });
     $('#pfolder', el).onclick = () => post({ type: 'revealProjects' });
+    el.insertAdjacentHTML('beforeend', recentHtml());
+    wireRecent(el);
   }
 
   /* ================= images: paste, drop, attach ================= */

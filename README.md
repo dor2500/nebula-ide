@@ -49,6 +49,12 @@ Antigravity, VS Code, Cursor or Windsurf.
 - **Queued messages**: keep typing while the agent works — messages wait in line and go out when it finishes (or *Send now*).
 - Planning / Fast conversation modes; rules (`CLAUDE.md`) and MCP servers under Customizations.
 
+**Memory**
+- The agent keeps notes for each project (and global notes) in `~\.nebula\memory` and reads them at the start of every conversation; it updates them itself when it learns something worth keeping.
+- New conversations get a short summary of the project's recent conversations, so the agent knows what was done before.
+- Start a message with `#` to save a note to memory yourself (`# global …` for all projects).
+- Nebula opens on your recent conversations — click one to continue it, even from another project.
+
 **Projects**
 - Every project lives in `Documents\Nebula Projects` (change it in Settings).
 - With no folder open, just describe what you want — the chat gets its own project folder and opens it, conversation included.
