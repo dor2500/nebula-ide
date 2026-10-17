@@ -49,7 +49,7 @@
   function ago(t) { const s = (Date.now() - t) / 1000; return s < 60 ? 'just now' : s < 3600 ? `${Math.floor(s / 60)}m ago` : s < 86400 ? `${Math.floor(s / 3600)}h ago` : `${Math.floor(s / 86400)}d ago`; }
 
   /* ================= transcript items ================= */
-  const LABEL = { Read: 'Analyzed', Write: 'Created', Edit: 'Edited', MultiEdit: 'Edited', Bash: 'Ran command', Glob: 'Searched', Grep: 'Searched', WebFetch: 'Read page', WebSearch: 'Searched web', Task: 'Subagent', Agent: 'Subagent', NotebookEdit: 'Edited', LS: 'Listed', Skill: 'Used skill' };
+  const LABEL = { Read: 'Analyzed', Write: 'Wrote', PowerShell: 'Ran command', Edit: 'Edited', MultiEdit: 'Edited', Bash: 'Ran command', Glob: 'Searched', Grep: 'Searched', WebFetch: 'Read page', WebSearch: 'Searched web', Task: 'Subagent', Agent: 'Subagent', NotebookEdit: 'Edited', LS: 'Listed', Skill: 'Used skill' };
   function arg(name, i = {}) {
     if (i.file_path) return relp(i.file_path);
     if (i.notebook_path) return relp(i.notebook_path);
@@ -66,7 +66,7 @@
     if (name === 'Edit') return diff(i.old_string, i.new_string);
     if (name === 'MultiEdit') return (i.edits || []).map((e) => diff(e.old_string, e.new_string)).join('<hr>');
     if (name === 'Write') return esc((i.content || '').slice(0, 5000));
-    if (name === 'Bash') return `<span class="cmd">$ ${esc(i.command)}</span>`;
+    if (name === 'Bash' || name === 'PowerShell') return `<span class="cmd">$ ${esc(i.command)}</span>`;
     return esc(JSON.stringify(i, null, 2));
   }
   const isEdit = (n) => ['Edit', 'MultiEdit', 'Write', 'NotebookEdit'].includes(n);
@@ -115,7 +115,7 @@
       }
       case 'perm': {
         const d = h('div', 'perm' + (it.resolved ? ' resolved' : ''));
-        const what = it.toolName === 'Bash' ? 'Run command?' : isEdit(it.toolName) ? `Edit ${esc(relp(it.input?.file_path || it.input?.notebook_path || ''))}?` : `Use ${esc(it.toolName)}?`;
+        const what = it.toolName === 'Bash' || it.toolName === 'PowerShell' ? 'Run command?' : isEdit(it.toolName) ? `Edit ${esc(relp(it.input?.file_path || it.input?.notebook_path || ''))}?` : `Use ${esc(it.toolName)}?`;
         d.innerHTML = `<div class="ptitle">${what}${it.resolved ? `<span class="pres ${it.resolved}">${esc(it.resolved)}</span>` : ''}</div>` +
           (it.reason ? `<div class="muted small">${esc(it.reason)}</div>` : '') +
           `<pre>${detail(it.toolName, it.input)}</pre>` +
